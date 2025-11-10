@@ -248,3 +248,181 @@ FreeRTOS 需要在编译器的包含路径中包含三个目录。这些目录�
 
 ## 示例应用
 
+每个 FreeRTOS 移植版本均附带至少一个演示应用程序，在创建时能够无需任何编译器错误或警告即可直接构建。若后续构建工具的变更导致该情况不再成立，请使用 FreeRTOS 支持论坛（https://forums.FreeRTOS.org）告知我们。
+
+> 跨平台支持：FreeRTOS 在 Windows、Linux 和 MacOS 系统上进行开发与测试，并与多种工具链（包括嵌入式及传统工具链）兼容。然而，由于版本差异或测试遗漏，偶尔可能出现构建错误。请通过 FreeRTOS 支持论坛（https://forums.FreeRTOS.org）向我们报告此类错误。
+
+示例应用程序具有多种用途：
+
+1. 为了提供一个工作且预先配置好的项目示例，包含正确的文件和设置正确的编译选项。
+2. 旨在允许用户进行“开箱即用”的实验，无需复杂的设置或先验知识。
+3. 展示如何使用FreeRTOS API。
+4. 作为创建实际应用的基础。
+5. 进行内核实现的压力测试。
+
+每个演示项目均位于 FreeRTOS/Demo 目录下独立的子目录中。该子目录的名称标明了演示项目所关联的端口。
+
+FreeRTOS.org 网站为每个演示应用程序提供一个页面。该网页包含以下信息：
+
+1. 如何定位FreeRTOS目录结构中演示项目的源文件。
+2. 项目的硬件或模拟器配置。
+3. 如何配置硬件以运行演示。
+4. 如何构建演示。
+5. 演示的预期行为。
+
+所有演示项目均创建`common demo tasks`的一个子集，其实现代码位于FreeRTOS/Demo/Common/Minimal目录下。common demo tasks的存在是为了演示如何使用FreeRTOS API以及测试FreeRTOS内核端口——它们并未实现任何特定的实用功能。
+
+许多演示项目也可以配置为创建一个简单的“闪烁”样式启动项目，该项目通常创建两个实时操作系统任务和一个队列。
+
+每个演示项目都包含一个名为 main.c 的文件，其中包含 main() 函数，该函数在启动 FreeRTOS 内核之前创建演示应用程序任务。有关特定演示的信息，请参阅各个 main.c 文件中的注释。
+
+![示例目录结构](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251110224704179.png)
+
+<a id="The demo directory hierarchy"></a>
+
+## 创建FreeRTOS项目
+
+### 调整其中一个供应的演示项目
+
+每个 FreeRTOS 兼容端口均至少附带一个预配置的演示应用程序。建议通过适配其中一个现有项目来创建新项目，以确保新项目包含正确的文件、安装正确的中断处理程序并设置了正确的编译选项。
+
+从现有演示项目创建新应用：
+
+1. 打开提供的演示项目，并确保其能够按预期构建和执行。
+2. 移除实现演示任务的源文件，这些文件位于Demo/Common目录下。
+3. main()函数中，除了`prvSetupHardware()`和`vTaskStartScheduler()`函数以外，删除所有其他函数调用，如[表2.4.1-1](#The template for a new main function)所示。
+
+*==一个新的主函数模板==*
+
+```cpp
+int main( void )
+{
+ /* Perform any hardware setup necessary. */
+ prvSetupHardware();
+ /* --- APPLICATION TASKS CAN BE CREATED HERE --- */
+ /* Start the created tasks running. */
+ vTaskStartScheduler();
+ /* Execution will only reach here if there was insufficient heap to
+ start the scheduler. */
+ for( ;; );
+ return 0;
+}
+```
+
+<a id="The template for a new main function"></a>
+
+### 从零开始创建新项目
+
+如前所述，建议从现有的演示项目创建新项目。如果不宜如此，则使用下列步骤创建新项目：
+
+1. 使用您选择的工具链，创建一个不包含任何 FreeRTOS 源文件的新项目。
+2. 确保新项目能够成功构建，下载至目标硬件设备，并正常执行。
+3. 仅当您确信您已经拥有一个运行中的项目时，再将[表2.4.2-1](#FreeRTOS source files to include in the project)中详细说明的FreeRTOS源代码文件添加到项目中。
+
+*==项目需要包含的FreeRTOS源代码文件==*
+
+| 文件                      | 位置                                                         |
+| ------------------------- | ------------------------------------------------------------ |
+| task.c                    | FreeRTOS/Source                                              |
+| queue.c                   | FreeRTOS/Source                                              |
+| list.c                    | FreeRTOS/Source                                              |
+| timers.c                  | FreeRTOS/Source                                              |
+| event_groups.c            | FreeRTOS/Source                                              |
+| stream_buffer.c           | FreeRTOS/Source                                              |
+| All C and assembler files | FreeRTOS/Source/portable/[compiler]/[architecture]           |
+| heap_n.c                  | FreeRTOS/Source/portable/MemMang, where n is either 1,2,3,4 or 4 |
+
+<a id="FreeRTOS source files to include in the project"></a>
+
+关于堆内存的说明：若`configSUPPORT_DYNAMIC_ALLOCATION`的值为0，则勿在您的项目中包含堆内存分配方案。否则，请在项目中包含堆内存分配方案，可选择heap_n.c文件中的一个，或自行提供。欲了解更多信息，请参阅第三章“堆内存管理”。
+
+## 数据类型与编码风格指南
+
+### 数据类型
+
+每个FreeRTOS的端口都有一个独特的`portmacro.h`头文件，其中包含（除其他内容外）两个特定端口的数据类型定义：`TickType_t `和 `BaseType_t`。以下列表描述了所使用的宏或typedef以及实际类型：
+
+1. TickType_t
+
+FreeRTOS 配置了一个周期性的中断，称为滴答中断。
+
+自FreeRTOS应用程序启动以来发生的滴答中断次数称为滴答计数。时钟计数被用作时间的度量。
+
+两个时钟中断之间的时间被称为时钟周期。时间以时钟周期的倍数来指定。
+
+TickType_t是用于存储计数值和指定时间的数据类型。
+
+TickType_t可以是一个无符号16位类型、无符号32位类型或无符号64位类型，具体取决于FreeRTOSConfig.h中 `configTICK_TYPE_WIDTH_IN_BITS`的设置。`configTICK_TYPE_WIDTH_IN_BITS`的设置与架构相关。FreeRTOS移植版本还会检查该设置是否有效。
+
+使用16位类型可以在8位和16位架构上显著提高效率，但严重限制了在FreeRTOS API调用中可指定的最大块时间。在32位或64位架构上没有理由使用16位的TickType_t类型。
+
+先前对configUSE_16_BIT_TICKS的使用已被configTICK_TYPE_WIDTH_IN_BITS所取代，以支持超过32位的计数器。新设计应使用configTICK_TYPE_WIDTH_IN_BITS而非configUSE_16_BIT_TICKS。
+
+*==TickType_t数据内息那个和`configTICK_TYPE_WIDTH_IN_BITS`配置==*
+
+| configTICK_TYPE_WIDTH_IN_BITS | 8-bit architectures | 16-bit architectures | 32-bit architectures | 64-bit architectures |
+| ----------------------------- | ------------------- | -------------------- | -------------------- | -------------------- |
+| TICK_TYPE_WIDTH_16_BITS       | uint16_t            | uint16_t             | uint16_t             | N/A                  |
+| TICK_TYPE_WIDTH_32_BITS       | uint32_t            | uint32_t             | uint32_t             | N/A                  |
+| TICK_TYPE_WIDTH_64_BITS       | N/A                 | N/A                  | uint64_t             | uint64_t             |
+
+2. BaseType_t
+
+这总是被定义为最适合该架构的数据类型。通常，在64位架构上它是一个64位类型，在32位架构上是32位类型，在16位架构上是16位类型，而在8位架构上是8位类型。
+
+BaseType_t通常用于表示仅包含非常有限值域的返回类型，以及pdTRUE/pdFALSE类型的布尔值。
+
+### 变量名
+
+变量以其类型为前缀：'c' 代表 char，'s' 代表 int16_t（短整型），'l' 代表 int32_t（长整型），以及 'x' 代表 BaseType_t和任何其他非标准类型（如结构体、任务句柄、队列句柄等）。
+
+如果一个变量是无符号的，它也会以'u'作为前缀。如果一个变量是指针，它也会以'p'作为前缀。例如，类型为uint8_t的变量将以'uc'作为前缀，而类型为指向char的指针（char *）的变量将以'pc'作为前缀。
+
+### 函数名
+
+函数前缀包含它们返回的类型以及它们定义在其中的文件。例如：
+
+* v**Task**PrioritySet()返回void类型并且定义在**tasks**.c
+* x**Queue**Receive()返回BaseType_t类型并且定义在**queue**.c
+* pv**Timer**GetTimerID()返回指针指向void类型并且定义在**timer**.c
+
+文件作用域（私有）函数以"prv"为前缀。
+
+### 格式化
+
+
+
+在某些示例应用程序中，一个标签始终设置为等价于四个空格，因此使用了标签。内核不再使用标签。
+
+### 宏定义
+
+大多数宏以大写字母编写，并以前缀小写字母标明其定义位置。[表2.5.5-1](#Macro prefixes)列出了前缀列表。
+
+*==宏前缀==*
+
+| 前缀                           | 宏定义位置             |
+| ------------------------------ | ---------------------- |
+| port(如portMAX_DELAY)          | portabel.h/portmacro.h |
+| task(如taskENTER_CRITICAL())   | task.h                 |
+| pd(如pdTURE)                   | projdefs.h             |
+| config(如configUSE_PREEMPTION) | FreeRTOSConfig.h       |
+| err(如errQUEUE_FULL)           | projdefs.h             |
+
+<a id="Macro prefixes"></a>
+
+> 请注意，信号量API几乎完全以宏的形式编写，但其遵循函数命名约定，而非宏命名约定。[表2.5.5-2](#Common macro definitions)中定义的宏在整个FreeRTOS源代码中被广泛使用。
+
+*==公用g==*
+
+| 宏定义  | 值   |
+| ------- | ---- |
+| pdTRUE  | 1    |
+| pdFALSE | 0    |
+| pdPASS  | 1    |
+| pdFAIL  | 0    |
+
+<a id="Common macro definitions"></a>
+
+### 过度类型转换的合理性
+
+FreeRTOS源代码可以与多种编译器一起编译，这些编译器在生成警告的方式和时机上存在差异。尤其是，不同的编译器在使用类型转换时有不同偏好。因此，FreeRTOS源代码中包含的类型转换比通常情况下所需的要多。
