@@ -168,7 +168,7 @@ FreeRTOS 以一组 C 源文件的形式提供。其中一些源文件是所有�
 
 在名为FreeRTOSConfig.h的头文件中定义的常量用于配置内核。请勿直接将FreeRTOSConfig.h包含在源文件中！相反，应包含FreeRTOS.h，后者将在适当的时候自动包含FreeRTOSConfig.h。
 
-FreeRTOSConfig.h 用于针对特定应用定制 FreeRTOS 内核。例如，FreeRTOSConfig.h 包含 configUSE_PREEMPTION 等常量，该常量定义了 FreeRTOS 采用协作式调度还是抢占式调度^[第4.13节描述了调度算法。]^。
+FreeRTOSConfig.h 用于针对特定应用定制 FreeRTOS 内核。例如，FreeRTOSConfig.h 包含 configUSE_PREEMPTION 等常量，该常量定义了 FreeRTOS 采用协作式调度还是抢占式调度[^1]。
 
 FreeRTOSConfig.h 文件用于针对特定应用对 FreeRTOS 进行定制，因此它应位于应用本身的一部分目录中，而非包含 FreeRTOS 源代码的目录内。
 
@@ -412,7 +412,7 @@ BaseType_t通常用于表示仅包含非常有限值域的返回类型，以及p
 
 > 请注意，信号量API几乎完全以宏的形式编写，但其遵循函数命名约定，而非宏命名约定。[表2.5.5-2](#Common macro definitions)中定义的宏在整个FreeRTOS源代码中被广泛使用。
 
-*==公用g==*
+*==公用宏==*
 
 | 宏定义  | 值   |
 | ------- | ---- |
@@ -457,6 +457,8 @@ FreeRTOS API中用于创建使用静态分配内存的内核对象的函数，�
 
 ### 使用动态内存分配
 
+<a id="Section3.1.4"></a>
+
 动态内存分配是C编程中的一个概念，而非仅限于FreeRTOS或多任务操作系统的特定概念。其与FreeRTOS相关，是因为内核对象可以可选地使用动态分配的内存进行创建，此外，通用的C库中的malloc()和free()函数可能不适合以下一个或多个原因：
 
 1. 它们并不总是适用于小型嵌入式系统。
@@ -499,6 +501,420 @@ Heap_1的pvPortMalloc()实现每次调用时，都会将名为FreeRTOS堆的简�
 * B显示创建了一个任务后的数组。
 * C展示了在创建三个任务后数组的状态。
 
+*==每次创建任务时，从堆1数组中分配RAM。==*
+
 ![每次创建任务时，从heap_1数组中分配RAM](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251112004435553.png)
 
 <a id="figure3.1"></a>
+
+### Heap_2
+
+Heap_2已被Heap_4超越，后者包含了增强的功能性，为了保持向后的兼容性，Heap_2保留在FreeRTOS发行版中，但不推荐用于新设计。
+
+Heap_2.c 同样通过将数组大小设置为常量configTOTAL_HEAP_SIZE来细分数组。它使用最佳适应算法进行内存分配，与 heap_1 不同的是，它确实实现了vPortFree()。再次，将堆实现为静态分配的数组使得 FreeRTOS 看起来消耗大量 RAM，因为堆成为 FreeRTOS 数据的一部分。
+
+最佳拟合算法确保pvPortMalloc()使用与请求的字节数最接近大小的空闲内存块。例如，考虑以下场景：
+
+* 堆中包含三块连续的空闲内存块，大小分别为5字节、25字节和100字节。
+* `pvPortMalloc()` 函数请求分配 20 字节的 RAM 内存。
+
+请求的字节数能够完全容纳在RAM中的最小空闲块中，这个块是25字节块。因此，pvPortMalloc()函数在返回指向20字节块的指针之前，会将25字节的块分割成一个20字节的块和一个5字节的块[^2]。新的5字节块仍然可供将来调用pvPortMalloc()函数时使用。
+
+
+
+与heap_4不同，heap_2不会将相邻的空闲块合并成单个更大的块，因此它比heap_4更容易发生碎片化。然而，如果分配和随后释放的块始终是相同的尺寸，那么碎片化就不会成为问题。
+
+[图Figure3.2.2-1](#Figure3.2.2-1)展示了在创建、删除及再次创建任务时，最佳拟合算法的工作原理：
+
+* 在分配了三个任务后，A 显示了数组的状态。数组顶部保留了一个较大的空闲块。
+* B 展示了删除一个任务后的数组。数组顶部的大空闲块依然存在。 现在，在之前保存已删除任务 TCB 和栈的较小空闲块中，也出现了两个较小的空闲块。
+* C呈现了创建另一个任务之后的情况。创建任务导致xTaskCreate() API函数内部调用了两次pvPortMalloc()，一次用于分配一个新的任务控制块（TCB），另一次用于分配任务堆栈。本书的第3.4节描述了xTaskCreate()。
+  * 每个TCB的大小都相同，因此最佳适配算法会重用存储已删除任务TCB的RAM块来存储新创建任务的TCB。
+  * 若新创建任务分配的栈大小与先前已删除任务分配的栈大小相同，则最佳适配算法将重用先前已删除任务栈所占用的内存块来存放新创建任务的栈。
+  * 数组顶部较大的未分配块保持未动。
+
+*==RAM的堆分配和释放随着任务的创建与删除进行==*
+
+![在任务创建和删除时，Heap_2数组中的RAM被分配和释放。](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251112005540229.png)
+
+<a id="Figure3.2.2-1"></a>
+
+Heap_2是非确定的，但比大多数标准库中的malloc()和free()实现更快。
+
+### Heap_3
+
+Heap_3.c使用标准库中的malloc()和free()函数，因此链接器配置定义了堆大小，且不使用configTOTAL_HEAP_SIZE常量。
+
+Heap_3 通过在执行期间暂时挂起 FreeRTOS 调度程序来使 malloc() 和 free() 线程安全。第 8 章“资源管理”涉及线程安全性和调度程序挂起。
+
+### Heap_4
+
+如heap_1和heap_2一样，heap_4通过将数组分割为更小的块来工作。如同之前所述，数组是静态分配的，并由configTOTAL_HEAP_SIZE配置得出，这使得FreeRTOS似乎使用了大量的RAM，因为堆成为FreeRTOS数据的一部分。
+
+Heap_4使用首次适应算法分配内存。与Heap_2不同，Heap_4将相邻的空闲内存块合并成更大的单一块，从而最小化了内存碎片的风险。
+
+第一个适配算法确保 `pvPortMalloc()` 使用第一个可用的、足够大的内存块来满足请求的字节数。例如，考虑以下场景：
+
+* 堆中包含三个空闲内存块，按照它们在数组中出现的顺序，分别是5字节、200字节和100字节。
+* pvPortMalloc() 请求分配 20 字节的 RAM。
+
+请求的字节数适合的第一个空闲RAM块是200字节的块，因此pvPortMalloc()将200字节的块分割为一个20字节的块和一个180字节的块[^3]，在返回20字节块的指针之前。新的180字节块仍然可供未来对pvPortMalloc()的调用使用。
+
+Heap_4将相邻的空闲块合并为一个更大的块，最小化了碎片化的风险，使得它适合于重复分配和释放不同大小RAM块的应用程序。
+
+[图3.2.4-1](#Figure3.2.4-1)展示了如何使用内存合并的Heap_4首次适应算法工作：
+
+* A展示了创建三个任务后的数组。数组顶部保留了一个大空闲块。
+* B展示了删除一项任务后的数组。数组顶部的大空闲区块仍然存在。 现在，在删除任务的TCB和栈曾经所在的位置，又出现了一个空闲区块。与heap_2示例不同，heap_4将之前分别存放删除任务的TCB和栈的两个内存区块合并为一个更大的单个空闲区块。
+* C展示了创建FreeRTOS队列后的情况。本书第5.3节描述了用于动态分配队列的xQueueCreate() API函数。xQueueCreate()调用pvPortMalloc()来分配队列使用的RAM。由于heap_4使用首次适配算法，pvPortMalloc()会从第一个足够容纳队列的空闲RAM块中分配内存，如[图3.2.4-1](#Figure3.2.4-1)所示，该内存块是由删除任务所释放的。队列并未占用空闲块中的全部RAM，因此该块被分割为两个部分，未使用的部分保留供未来对pvPortMalloc()的调用使用。
+* D显示从应用程序代码直接调用pvPortMalloc()而非间接通过调用FreeRTOS API函数时的情形。用户分配的内存块足够小，能够容纳第一个空闲内存块，该空闲内存块位于分配给队列的内存与其后分配给TCB的内存之间。
+  * 删除任务释放的内存现已分割为三个独立的块；第一个块包含队列，第二个块包含用户分配的内存，第三个块保持空闲状态。
+* E展示了在删除队列后的情况，这自动释放了被删除队列分配的内存。现在，在用户分配的块的两侧都有了空闲内存。
+* F展示了在释放用户分配内存后的情况。用户分配的内存块所占用的内存已被与两侧的空闲内存合并，形成一个更大的单一空闲内存块。
+
+*==RAM的分配和从heap_4数组中释放==*
+
+![RAM正在从Heap_4数组中分配和释放。](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251112011352055.png)
+
+<a id="Figure3.2.4-1"></a>
+
+Heap_4并非确定性的，但它比大多数标准库中malloc()和free()的实现更快。
+
+### Heap_5
+
+Heap_5采用与heap_4相同的内存分配算法。与heap_4不同，后者仅限于从单一数组中分配内存，heap_5能够将来自多个独立内存空间的内存合并为单个堆。当FreeRTOS运行系统所提供的RAM在系统内存映射中呈现为非连续（存在间隙）的块时，heap_5具有实用价值。
+
+### 初始化Heap_5：vPortDefineHeapRegions() API 函数
+
+`vPortDefineHeapRegions()`函数通过指定堆管理器 `heap_5`中每个单独内存区域的起始地址和大小，初始化了`heap_5`。`Heap_5`是唯一需要显式初始化且在调用 `vPortDefineHeapRegions()`之后才能使用的堆分配方案。这意味着在调用 `vPortDefineHeapRegions()`之后，诸如任务、队列和信号量之类的内核对象才能动态创建。
+
+*==vPortDefineHeapRegions() API函数原型==*
+
+```cpp
+void vPortDefineHeapRegions( const HeapRegion_t * const pxHeapRegions );
+```
+
+`vPortDefineHeapRegions()`函数仅接受一个 `HeapRegion_t`结构体数组作为参数。每个结构体定义了将构成堆的一部分内存块起始地址和大小。整个数组定义了整个堆空间。
+
+*==HeapRegion_t结构体==*
+
+```cpp
+typedef struct HeapRegion
+{
+ /* 内存块开始地址，该内存块将作为堆的一部分。*/
+ uint8_t *pucStartAddress;
+ /* 内存块大小的字节数量。 */
+ size_t xSizeInBytes;
+} HeapRegion_t;
+```
+
+参数：
+
+* `pxHeapRegions`
+  * 指向`HeapRegion_t`结构体数组的起始地址。每个结构体定义了一个将构成堆的内存块的起始地址和大小。
+  * 数组中的`HeapRegion_t`结构必须按照起始地址排序；描述具有最低起始地址内存区域的`HeapRegion_t`结构必须是数组中的第一个结构，而描述具有最高起始地址内存区域的`HeapRegion_t`结构必须是数组中的最后一个结构。
+  * 在数组的末尾使用`HeapRegion_t`结构标记，其中pucStartAddress成员被设置为NULL。
+
+作为示例，考虑[图3.2.6-1](#Memory Map)所示的一个假设内存映射，其中包含三个独立的RAM块：RAM1、RAM2和RAM3。假定可执行代码放置在只读存储器中，该存储器未在图中显示。
+
+*==内存映射==*
+
+![内存映射](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251116101550890.png)
+
+<a id="Memory Map"></a>
+
+[代码块3.2.6-3](#3.2.6-3)展示了一个HeapRegion_t结构数组，该数组共同完整描述了三块RAM。
+
+*==一个 HeapRegion_t 结构数组，共同完整地描述了 RAM 的 3 个区域==*
+
+```cpp
+/* 定义三个RAM区域的起始地址和大小。 */
+#define RAM1_START_ADDRESS ( ( uint8_t * ) 0x00010000 )
+#define RAM1_SIZE ( 64 * 1024 )
+#define RAM2_START_ADDRESS ( ( uint8_t * ) 0x00020000 )
+#define RAM2_SIZE ( 32 * 1024 )
+#define RAM3_START_ADDRESS ( ( uint8_t * ) 0x00030000 )
+#define RAM3_SIZE ( 32 * 1024 )
+/* 创建一个包含HeapRegion_t定义的数组，为三个RAM区域各分配一个索引，并以包含NULL地址的HeapRegion_t结构终止该数组。HeapRegion_t结构必须按照起始地址的顺序排列，起始地址最低的结构应排在首位。 */
+const HeapRegion_t xHeapRegions[] =
+{
+ { RAM1_START_ADDRESS, RAM1_SIZE },
+ { RAM2_START_ADDRESS, RAM2_SIZE },
+ { RAM3_START_ADDRESS, RAM3_SIZE },
+ { NULL, 0 } /* 标记数组的结束。 */
+};
+int main( void )
+{
+ /* Initialize heap_5. */
+ vPortDefineHeapRegions( xHeapRegions );
+ /* Add application code here. */
+}   
+```
+
+<a id="3.2.6-3"></a>
+
+尽管[代码块3.2.6-3](#3.2.6-3)正确描述了RAM，但它并未展示一个可用的实例，因为它将所有的RAM都分配给了堆区，从而使得没有足够的RAM可供其他变量使用。
+
+构建过程的连接阶段为每个变量分配内存地址。连接器可用的内存通常由连接器配置文件（如连接器脚本）进行描述。在[图3.2.6-1](#Memory Map) B中，假设连接器脚本包含了关于RAM1的信息，但没有包含关于RAM2或RAM3的信息。 因此，连接器将变量放在RAM1中，仅RAM1中地址0x0001nnnn以上的部分可用于heap_5使用。0x0001nnnn的实际值取决于应用中包含的所有变量的大小之和。连接器留下了RAM2和RAM3的全部空间未使用，使得RAM2和RAM3的全部可用于heap_5使用。
+
+所展示的[代码块3.2.6-3](#3.2.6-3)中的代码会导致分配给heap_5的RAM与用于存储变量的RAM重叠。如果您将xHeapRegions数组中第一个HeapRegion_t结构的起始地址设置为0x0001nnnn，而不是0x00010000的起始地址，则堆不会与链接器使用的RAM重叠。然而，这不是一个推荐解决方案，因为：
+
+* 起始位置可能难以确定
+* 未来构建中链接器使用的内存（RAM）量可能会发生变化，这将需要对HeapRegion_t结构中使用的起始地址进行更新。
+* 构建工具将无法知晓，因此也无法向应用程序开发者发出警告，如果链接器使用的RAM与堆_5使用的RAM发生重叠。
+
+以下是更便捷且易于维护的一个示例，如[代码块3.2.6.-4](#3.2.6-4)所示。它声明了一个名为ucHeap的数组。 ucHeap是一个正常的变量，因此它成为了连接器分配给RAM1的数据的一部分。xHeapRegions数组中的第一个HeapRegion_t结构体描述了ucHeap的起始地址和大小，因此ucHeap成为了heap_5管理的内存的一部分。ucHeap的大小可以不断增加，直到链接器分配的RAM1被耗尽，如[图3.2.6-1](#Memory Map)C所示。
+
+*==一组描述 RAM2 和 RAM3 所有内存区域的结构体 HeapRegion_t，但仅部分描述 RAM1。==*
+
+```cpp
+/* 定义链接器未使用的两个RAM区域的开始地址和大小。 */
+#define RAM2_START_ADDRESS ( ( uint8_t * ) 0x00020000 )
+#define RAM2_SIZE ( 32 * 1024 )
+#define RAM3_START_ADDRESS ( ( uint8_t * ) 0x00030000 )
+#define RAM3_SIZE ( 32 * 1024 )
+/* 声明一个数组，该数组将作为heap_5使用的堆的一部分。该数组将由链接器放置在RAM1中。 */
+#define RAM1_HEAP_SIZE ( 30 * 1024 )
+static uint8_t ucHeap[ RAM1_HEAP_SIZE ];
+/* 创建一个HeapRegion_t定义的数组。在代码块3.3.1-1中，第一个条目描述了所有RAM1的内容，因此heap_5将使用全部的RAM1；这次，第一个条目仅描述了ucHeap数组，因此heap_5只会使用包含ucHeap数组的那一部分RAM1。 HeapRegion_t结构仍然需要按照起始地址的顺序排列，包含最低起始地址的结构首先出现。 */
+const HeapRegion_t xHeapRegions[] =
+{
+ { ucHeap, RAM1_HEAP_SIZE },
+ { RAM2_START_ADDRESS, RAM2_SIZE },
+ { RAM3_START_ADDRESS, RAM3_SIZE },
+ { NULL, 0 } /* Marks the end of the array. */
+};
+```
+
+[代码块3.2.6.-4](#3.2.6-4)中演示的该技术的优势包括：
+
+* 无需使用硬编码的起始地址。
+* 在`HeapRegion_t`结构中使用的地址将自动由链接器设置，因此无论将来构建过程中链接器使用的RAM量如何变化，它始终都是正确的。
+* 由于链接器将数据放置在 RAM1 中，因此无法将堆5分配的 RAM 与 RAM1 中的数据重叠。
+* 如果ucHeap过大，应用程序将无法链接。
+
+## 堆相关效用函数与宏
+
+### 确定堆起始地址
+
+Heap_1,heap_2和heap_4从静态分配数组中分配内存，该数组的维度由configTOTAL_HEAP_SIZE决定。本节将这些分配方案统称为heap_n。
+
+有时堆需要放置在特定的内存地址。例如，动态创建的任务所分配的栈来自堆，因此可能需要将堆定位在快速内部存储器而非慢速外部存储器中。（另请参见下文“将任务栈放置在快速存储器中”小节，了解在快速存储器中分配任务栈的另一种方法）。configAPPLICATION_ALLOCATED_HEAP 编译时配置常量使应用程序能够在heap_n.c 源文件中原有的声明之外，声明该数组。在应用程序代码中声明数组，允许应用程序编写者指定其起始地址。
+
+如果FreeRTOSConfig.h中配置应用程序分配的堆（configAPPLICATION_ALLOCATED_HEAP）设置为1，或者留为未定义，则使用FreeRTOS的应用程序必须分配一个名为ucHeap的uint8_t数组，其大小由configTOTAL_HEAP_SIZE常量指定。
+
+将变量放置于特定内存地址所需的语法取决于所使用的编译器，因此请参阅您所使用的编译器的文档。以下为两种编译器的示例：
+
+[代码块3.3.1-1](#Code3.3.1-1)展示GCC编译器所需用于声明数组并将其放入名为.my_heap的内存区段的语法。
+
+*==使用GCC语法声明将被heap_4使用的数组，并将数组放置在名为.my_heap的内存段中。==*
+
+```cpp
+uint8_t ucHeap[ configTOTAL_HEAP_SIZE ] __attribute__ ( ( section( ".my_heap" ) )
+);
+```
+
+<a id="Code3.3.1-1"></a>
+
+[代码块3.3.1-2](#Code3.3.1-2)展示由IAR编译器所需的语法来声明数组，并将数组放置于绝对内存地址0x20000000。
+
+*==使用IAR语法声明将被heap_4使用的数组，并将该数组放置在绝对地址0x20000000处。==*
+
+```cpp
+uint8_t ucHeap[ configTOTAL_HEAP_SIZE ] __attribute__ ( ( section( ".my_heap" ) )
+);
+```
+
+<a id="Code3.3.1-2"></a>
+
+### xPortGetFreeHeapSize()函数
+
+`xPortGetFreeHeapSize()`API函数在被调用时返回堆中可用的字节数。它不提供关于堆碎片化的信息。
+
+*==xPortGetFreeHeapSize() API函数原型==*
+
+```cpp
+size_t xPortGetFreeHeapSize( void );
+//xPortGetFreeHeapSize() 函数返回在被调用时堆中剩余未分配的字节数。
+```
+
+### xPortGetMinimumEverFreeHeapSize()函数
+
+`xPortGetMinimumEverFreeHeapSize()`API函数返回从FreeRTOS应用程序开始执行以来堆中曾经存在的最小数量的未分配字节。
+
+`xPortGetMinimumEverFreeHeapSize()`函数返回的值表明应用程序曾经接近耗尽堆空间的程度。例如，如果 xPortGetMinimumEverFreeHeapSize() 返回 200，则意味着自应用程序开始执行以来的某个时间点，应用程序的堆空间使用量距离耗尽仅剩下 200 字节。
+
+xPortGetMinimumEverFreeHeapSize() 也可用于优化堆大小。例如，若在执行已知具有最高堆使用量的代码后，xPortGetMinimumEverFreeHeapSize() 返回 2000，则configTOTAL_HEAP_SIZE 可减少高达 2000 字节。
+
+xPortGetMinimumEverFreeHeapSize() 函数仅在 heap_4 和 heap_5 中实现。
+
+*==xPortGetMinimumEverFreeHeapSize()API函数原型==*
+
+```cpp
+size_t xPortGetMinimumEverFreeHeapSize( void );
+// xPortGetMinimumEverFreeHeapSize() 函数返回自 FreeRTOS 应用程序开始执行以来堆中存在过的最小未分配字节数量。
+```
+
+### vPortGetHeapStats()函数
+
+Heap_4和heap_5实现了vPortGetHeapStats()函数，该函数以引用方式将HeapStats_t结构体作为其唯一参数来完成结构体的传递。
+
+[代码块3.3.4-1](#3.3.4-1)展示了`vPortGetHeapStats()`函数的函数原型和`HeapStats_t`结构。
+
+```cpp
+void vPortGetHeapStats( HeapStats_t *xHeapStats );
+
+/* Definition of the HeapStats_t structure. All sizes specified in bytes. */
+typedef struct xHeapStats
+{
+ /* 当前堆总大小 - 这是所有可用空闲块之和，而不是最大可用块的大小。 */
+ size_t xAvailableHeapSpaceInBytes;
+ /* 调用vPortGetHeapStats()时堆内最大空闲块的大小。 */
+ size_t xSizeOfLargestFreeBlockInBytes;
+ /* 调用vPortGetHeapStats()时堆中最小空闲块的大小。 */
+ size_t xSizeOfSmallestFreeBlockInBytes;
+ /* 在调用 vPortGetHeapStats() 时，堆内空闲内存块的数量。 */
+ size_t xNumberOfFreeBlocks;
+ /* 自系统启动以来，堆内存中出现的总空闲内存（所有空闲块的合计）的最小值。 */
+ size_t xMinimumEverFreeBytesRemaining;
+ /* pvPortMalloc()函数成功返回有效内存块的调用次数。 */
+ size_t xNumberOfSuccessfulAllocations;
+ /* 成功调用 vPortFree() 函数释放内存块的数量。 */
+ size_t xNumberOfSuccessfulFrees;
+} HeapStats_t;
+```
+
+<a id="Code3.3.4-1"></a>
+
+### 收集每任务堆使用情况统计
+
+《本书记录的待定章节TBD-RB》中描述的vTaskGetInfo() API函数，用于向TaskStatus_t结构体填充关于一个任务的信息。若在FreeRTOSConfig.h中将编译时常量configTRACK_TASK_MEMORY_ALLOCATIONS设置为1，则该结构体将包含以下附加信息：
+
+* 任务调用pvPortMalloc()的次数。
+* vPortFree() 被调用的次数
+* 在 vTaskGetInfo() 被调用时，该任务未被任何任务释放的堆字节数。
+* 任务自启动以来在任何给定时间分配的最大堆内存量。
+
+### 内存分配失败钩子函数
+
+如同标准库中的malloc()函数，pvPortMalloc()在无法分配请求的RAM数量时会返回NULL。如果pvPortMalloc()返回NULL，malloc失败回调函数（或回调）将由应用程序提供并被调用。为了使回调发生，您必须在FreeRTOSConfig.h中将configUSE_MALLOC_FAILED_HOOK设置为1。如果在使用动态内存分配来创建内核对象的FreeRTOS API函数中调用malloc失败回调函数，则该对象不会被创建。
+
+如果在FreeRTOSConfig.h中将configUSE_MALLOC_FAILED_HOOK设置为1，则应用程序必须提供一个名为并具有如[代码块3.3.6-1](#Code3.3.6-1)所示原型的malloc失败挂钩函数。应用程序可以以适合应用的方式实现该函数。所提供的FreeRTOS示例应用程序可能将分配失败视为致命错误，但这不是生产系统中的最佳实践，生产系统应能够优雅地从分配失败中恢复。
+
+*==malloc失败回调函数的名称和原型==*
+
+```cpp
+void vApplicationMallocFailedHook( void );
+```
+
+<a id="Code3.3.6-1"></a>
+
+### 将任务栈放置在快速内存中
+
+由于堆栈需要以高频率进行读写操作，因此应将其放置在快速内存中，但这可能并非堆所期望驻留的位置。FreeRTOS 使用 `pvPortMallocStack()` 和 `vPortFreeStack()` 宏来可选地启用在 FreeRTOS API 代码中分配的堆栈，使其拥有独立的内存分配器。若希望堆栈来源于由 `pvPortMalloc()` 管理的堆内存，则应保持 `pvPortMallocStack()` 和 `vPortFreeStack()` 未定义状态，因为它们分别默认调用 `pvPortMalloc()` 和 `vPortFree()`。否则，应定义这些宏以调用应用程序提供的函数，具体示例如[代码块3.3.7-1](#Code3.3.7-1)所示。
+
+*==将 `pvPortMallocStack()` 和 `vPortFreeStack()` 宏映射到应用程序定义的内存分配器。==*
+
+```cpp
+/* 应用程序作者提供的函数，这些函数从快速RAM区域分配和释放内存。 */
+void *pvMallocFastMemory( size_t xWantedSize );
+void vPortFreeFastMemory( void *pvBlockToFree );
+/* 在 FreeRTOSConfig.h 中添加以下内容，以将 pvPortMallocStack() 和 vPortFreeStack() 宏映射到使用快速内存的函数。 */
+#define pvPortMallocStack( x ) pvMallocFastMemory( x )
+#define vPortFreeStack( x ) vPortFreeFastMemory( x )
+```
+
+<a id="Code3.3.7-1"></a>
+
+## 使用静态内存分配
+
+[3.1.4节](#Section3.1.4)列出了动态内存分配带来的某些缺点。为了避免这些问题，静态内存分配允许开发人员显式地为应用程序创建所需的每个内存块。这有以下优点：
+
+* 所有必需的内存都在编译时已知。 
+* 所有内存都是确定性的。
+
+除此之外，还有其他优势，但伴随着这些优势，也会带来一些复杂性。主要的复杂性在于需要添加一些额外的用户函数来管理一部分内核内存，而第二个复杂性则是确保所有静态内存都在合适的范围内声明。
+
+### 启用静态内存分配
+
+静态内存分配通过在FreeRTOSConfig.h中将configSUPPORT_STATIC_ALLOCATION设置为1来启用。当此配置启用时，内核将启用所有内核函数的静态版本。这些包括：
+
+* xTaskCreateStatic
+* xEventGroupCreateStatic
+* xEventGroupGetStaticBuffer
+* xQueueGenericCreateStatic
+* xQueueGenericGetStaticBuffers
+* xQueueCreateMutexStatic
+  * if `configUSE_MUTEXES `is 1
+* xQueueCreateCountingSemaphoreStatic
+  * if `configUSE_COUNTING_SEMAPHORES `is 1
+* xStreamBufferGenericCreateStatic
+* xStreamBufferGetStaticBuffers
+* xTimerCreateStatic
+  * if `configUSE_TIMERS `is 1
+* xTimerGetStaticBuffer
+  * if `configUSE_TIMERS `is 1
+
+这些功能将在本书的相应章节予以解释。
+
+### 静态内部内核内存
+
+当静态内存分配器被启用时，空闲任务和计时器任务（如果已启用）将使用由用户函数提供的静态内存。这些用户函数是：
+
+* vApplicationGetTimerTaskMemory
+  * if `configUSE_TIMERS` is 1
+* vApplicationGetIdleTaskMemory
+
+#### vApplicationGetTimerTaskMemory
+
+如果configSUPPORT_STATIC_ALLOCATION和configUSE_TIMERS都被启用，内核将调用vApplicationGetTimerTaskMemory()函数，以允许应用程序创建和返回一个内存缓冲区用于定时器任务的TCB和堆栈。该函数还将返回定时器任务堆栈的大小。在[代码块3.4.2.1-1](#Code3.4.2.1-1)中展示了定时器任务内存函数的一个建议实现。
+
+*==vApplicationGetTimerTaskMemory的典型实现==*
+
+```cpp
+void vApplicationGetTimerTaskMemory( StaticTask_t **ppxTimerTaskTCBBuffer,
+ StackType_t **ppxTimerTaskStackBuffer,
+ uint32_t *pulTimerTaskStackSize )
+{
+ /* 如果要在此函数中声明定时器任务所需的缓冲区，则必须将其声明为静态 - 否则它们将在堆栈上分配，因此在该函数退出后将不再存在。*/
+ static StaticTask_t xTimerTaskTCB;
+ static StackType_t uxTimerTaskStack[ configMINIMAL_STACK_SIZE ];
+ /* 分发一个指向StaticTask_t结构的指针，其中将存储计时器任务的状态。*/
+ *ppxTimerTaskTCBBuffer = &xTimerTaskTCB;
+ /* 分发将用于作为计时器任务的堆栈的数组。 */
+ *ppxTimerTaskStackBuffer = uxTimerTaskStack;
+ /* 分配由*ppxTimerTaskStackBuffer指向的数组的堆栈大小。 请注意，堆栈大小是以`StackType_t`的数量来计数的。 */
+ *pulTimerTaskStackSize = sizeof(uxTimerTaskStack) / sizeof(*uxTimerTaskStack);
+}
+```
+
+<a id="Code3.4.2.1-1"></a>
+
+由于在任何系统（包括SMP系统）中只有一个定时器任务，解决定时器任务内存问题的有效方案是在vApplicationGetTimeTaskMemory()函数中分配静态缓冲区，并将缓冲区指针返回给内核。
+
+#### vApplicationGetIdleTaskMemory
+
+当核心耗尽预定工作后，将执行空闲任务。空闲任务执行一些维护工作，如果启用，还可以触发用户的vTaskIdleHook()。在对称多处理系统（Symetric Multiprocessing System，SMP）中，对于剩余的每个核心，也存在非维护的空闲任务，但这些任务在内部静态分配，大小为configMINIMUM_STACK_SIZE字节。
+
+vApplicationGetIdleTaskMemory函数用于允许应用程序为“主”空闲任务创建所需的缓冲区。[代码块3.4.2.2-1](#Code3.4.2.2-1)展示了使用静态局部变量创建所需缓冲区的vApplicationIdleTaskMemory()函数典型实现。
+
+*==典型的 vApplicationGetIdleTaskMemory 实现==*
+
+```cpp
+void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer,
+ StackType_t **ppxIdleTaskStackBuffer,
+ uint32_t *pulIdleTaskStackSize )
+{
+ static StaticTask_t xIdleTaskTCB;
+ static StackType_t uxIdleTaskStack[ configMINIMAL_STACK_SIZE ];
+ *ppxIdleTaskTCBBuffer = &xIdleTaskTCB;
+ *ppxIdleTaskStackBuffer = uxIdleTaskStack;
+ *pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
+}
+```
+
+<a id="Code3.4.2.2-1"></a>
+
+[^1]: 第4.13节描述了调度算法。
+[^2]:  这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
+[^3]: 这是一个简化处理，因为heap_4用于存储堆区内部块大小的信息，因此两个分裂后的块实际总和将少于200字节。
