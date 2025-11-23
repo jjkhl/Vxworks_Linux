@@ -338,6 +338,8 @@ int main( void )
 
 ## 数据类型与编码风格指南
 
+<a id="Section2.5"></a>
+
 ### 数据类型
 
 每个FreeRTOS的端口都有一个独特的`portmacro.h`头文件，其中包含（除其他内容外）两个特定端口的数据类型定义：`TickType_t `和 `BaseType_t`。以下列表描述了所使用的宏或typedef以及实际类型：
@@ -915,6 +917,401 @@ void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer,
 
 <a id="Code3.4.2.2-1"></a>
 
+# 任务管理
+
+## 介绍
+
+### 范围
+
+本章包括：
+
+* FreeRTOS如何在应用程序中为每个任务分配处理时间。
+* FreeRTOS如何选择在任何给定时间执行哪个任务。
+* 每个任务的相对优先级如何影响系统行为。
+* 任务可存在的状态。
+
+本章也讨论：
+
+* 如何实施任务。
+* 如何创建一个或多个任务实例。
+* 如何使用任务参数。
+* 如何更改已创建任务的优先级。
+* 如何删除一个任务
+* 如何使用任务实现周期性处理。（后续章节将描述如何使用软件定时器实现相同的功能。）
+* 当空闲任务将执行及其应用方式。
+
+本章所阐述的概念是理解如何使用 FreeRTOS 以及 FreeRTOS 应用程序如何运行的基础。因此，这是本书中最详细的章节。
+
+## 任务功能
+
+任务被实现为C函数。任务必须实现预期的函数原型，如[代码块4.2-1](#Code4.2-1)所示，该原型接收一个void指针参数并返回void。
+
+*==任务功能原型==*
+
+```cpp
+void vATaskFunction( void * pvParameters );
+```
+
+<a id="Code4.2-1"></a>
+
+每个任务自身就是一个小型程序。它具有入口点，通常会在无限循环中持续运行，并不会终止。典型的任务结构如[代码块4.2-2](#Code4.2-2)所示。
+
+FreeRTOS任务不得在任何形式下从实现它的函数中返回。它不得包含'返回'语句，并且不得允许执行超出其实现函数的末尾。如果一个任务不再需要，应按照[代码块4.2-2](#Code4.2-2)显式地将其删除。
+
+一个单一的任务函数定义可用于创建任意数量的任务，其中每个创建的任务都是一个独立的执行实例。每个实例拥有自己的栈，因此在其内部定义的任何自动（栈）变量都有其自己的副本。
+
+```cpp
+void vATaskFunction( void * pvParameters )
+{
+ /*
+	栈分配变量可以在函数内部正常声明。
+	使用此示例函数创建的每个任务实例都将在任务的栈上分配其自lStackVariable 的独立实例。
+ */
+ long lStackVariable = 0;
+ /*
+	与栈分配变量不同，使用`static`关键字声明的变量由链接器在内存中分配到特定位置。
+	这意味着所有调用vATaskFunction的任务将共享lStaticVariable的同一实例。
+ */
+ static long lStaticVariable = 0;
+ for( ;; )
+ {
+ /* The code to implement the task functionality will go here. */
+ }
+ /*
+	如果任务实现程序在循环之外退出，则必须在执行其实现函数结束之前删除该任务。
+	当将NULL作为参数传递给vTaskDelete() API函数时，这表示要删除的任务是调用（当前）任务。
+ */
+ vTaskDelete( NULL );
+}
+```
+
+<a id="Code4.2-2"></a>
+
+## 顶级任务状态
+
+一个应用可能包含许多任务。如果执行应用的处理器包含单个核心，则任何给定时刻仅能执行一个任务。这意味着任务可能存在于两种状态之一：运行和非运行。我们首先考虑这种简单的模型。本章后续部分描述了非运行状态的几个子状态。
+
+当处理器正在执行该任务的代码时，任务处于运行状态。当任务未运行时，该任务被暂停，并且已保存其状态，以便下次调度程序决定应进入运行状态时恢复执行。当任务恢复执行时，它会从它离开运行状态之前即将执行的指令处继续执行。
+
+从一个非运行状态过渡到运行状态的任务称为“切换进入”或“交换进入”。反之，从一个运行状态过渡到非运行状态的任务称为“切换出去”或“交换出去”。FreeRTOS调度器是唯一能够将任务切换进或切换出运行状态的主体。
+
+![高级任务状态及转换](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251122132841681.png)
+
+## 任务创建
+
+可以使用六个API函数来创建任务：xTaskCreate()、xTaskCreateStatic()、xTaskCreateRestricted()、xTaskCreateRestrictedStatic()、xTaskCreateAffinitySet()和xTaskCreateStaticAffinitySet()。
+
+每个任务需要两块内存：一块用于存储其任务控制块（TCB），另一块用于存储其堆栈。 名称中包含“Static”的FreeRTOS API函数使用作为参数传递给函数的预分配内存块。相反，名称中不包含“Static”的API函数在运行时从系统堆栈动态分配所需的内存。
+
+某些FreeRTOS端口支持任务在“受限”(restricted)或“非特权”(unprivileged)模式下运行。名称中包含“受限”的FreeRTOS API函数创建的任务以有限访问系统内存的方式执行。名称中不包含“受限”的API函数创建的任务在“特权模式”下执行，并能够访问系统整个内存映射。
+
+支持对称多处理（SMP）的FreeRTOS内核允许同一CPU的多个核心上并发运行不同的任务。对于这些内核，可以通过带有“Affinity”命名的函数指定任务将在哪个核心上运行。
+
+FreeRTOS任务创建API函数较为复杂。本文档中的大多数示例使用xTaskCreate()，因为它在这类函数中是最简单的。
+
+### xTaskCreate() API函数
+
+[代码块4.4.1-1](#Code4.4.1-1)展示了xTaskCreate() API函数的原型。xTaskCreateStatic()函数有两个额外的参数，分别指向用于存储任务数据结构和堆栈的预分配内存。 [第2.5节：数据类型与编码风格指南](#Section2.5)描述了所使用的数据类型和命名规范。
+
+*==xTaskCreate函数原型==*
+
+```cpp
+BaseType_t xTaskCreate(  TaskFunction_t pvTaskCode,
+                         const char * const pcName,
+                         configSTACK_DEPTH_TYPE usStackDepth,
+                         void * pvParameters,
+                         UBaseType_t uxPriority,
+                         TaskHandle_t * pxCreatedTask );
+```
+
+xTaskCreate()入参出参介绍：
+
+* pvTaskCode
+  * 任务本质上是不退出的C函数，因此通常以无限循环的形式实现。pvTaskCode参数简单地是指向实现任务的函数的指针（实质上就是函数的名称）。
+* pcName
+  * 任务的一个描述性名称。FreeRTOS 并未以任何方式使用此名称，其包含纯粹作为调试辅助。通过人类可读名称识别任务比通过其句柄识别任务要简单得多。
+  * 应用定义的常量configMAX_TASK_NAME_LEN定义了任务名称的最大长度，包括空终止符。提供较长的字符串会导致字符串被截断。
+* usStackDepth
+  * 指定任务使用的栈大小。若要使用预分配内存而非动态分配内存，应使用 xTaskCreateStatic() 而非 xTaskCreate()。
+  * 请注意，该值指定的是栈可以容纳的单词数量，而不是字节数。例如，如果栈的宽度为32位，且usStackDepth为128，则xTaskCreate()将分配512字节的栈空间（128 * 4字节）。
+  * `configSTACK_DEPTH_TYPE` 是一个宏，允许应用程序开发者指定用于存储栈大小的数据类型。如果未定义，则`configSTACK_DEPTH_TYPE`默认为`uint16_t`。如果栈深度乘以栈宽度超过了65535（即最大的16位数字），则在`FreeRTOSConfig.h`中应定义`configSTACK_DEPTH_TYPE`为`unsigned long`或`size_t`。
+  * 13.3小节介绍了一个选择最优栈大小的实用方法
+* pvParameters
+  * 实现任务功能的函数接受一个单空的指针（void *）参数。pvParameters是通过该参数传递到任务中的值。
+* uxPriority
+  * 定义任务的优先级。数值0代表最低优先级，而(configMAX_PRIORITIES – 1)则代表最高优先级。第4.5节详细描述了用户自定义的configMAX_PRIORITIES常量。
+  * 如果定义的uxPriority值大于（configMAX_PRIORITIES - 1），则该值将被限制为（configMAX_PRIORITIES - 1）。
+* pxCreatedTask
+  * 指向用于存储创建任务句柄的位置。该句柄可在后续 API 调用中被用于，例如更改任务的优先级或删除任务。
+  * `pxCreatedTask`是一个可选参数，如果不需要任务的句柄，则可以设置`NULL`。
+* 返回值
+  * pdPASS：暗示任务创建成功。
+  * pdFAIL：这表明创建任务时可用的堆内存不足。第3章提供了有关堆内存管理的更多信息。
+
+#### 示例4.4.1.1创建任务
+
+以下示例演示了创建两个简单任务并启动新创建任务的步骤。这两个任务通过使用粗糙的忙等循环来创建周期性延迟，简单地定期打印出一个字符串。两个任务具有相同的优先级，除了它们打印的字符串不同——请参阅[代码块4.4.1.1-1](#Code4.4.1.1-1)以获取各自的实现代码。关于在任务中使用printf()的警告，请参阅第8章。
+
+*==实施示例4.1中所用的第一个任务的执行==*
+
+```cpp
+void vTask1( void * pvParameters )
+{
+ /* ulCount is declared volatile to ensure it is not optimized out. */
+ volatile unsigned long ulCount;
+ for( ;; )
+ {
+ /* Print out the name of the current task task. */
+ vPrintLine( "Task 1 is running" );
+ /* Delay for a period. */
+ for( ulCount = 0; ulCount < mainDELAY_LOOP_COUNT; ulCount++ )
+ {
+	 /*
+		这个循环只是一个非常粗糙的延时实现。在此处没有任何操作。
+		后续的示例将用合适的延时/休眠函数替换。
+	 */
+ }
+ }
+}
+
+void vTask2( void * pvParameters )
+{
+ /* 为了确保 `ulCount` 不会被优化掉，我们将其声明为 `volatile`。 */
+ volatile unsigned long ulCount;
+ /* 根据大多数任务的情况，该任务是在一个无限循环中实现的 */
+ for( ;; )
+ {
+ /* 打印出此任务的名称。 */
+ vPrintLine( "Task 2 is running" );
+ /* 延迟一段时间。 */
+ for( ulCount = 0; ulCount < mainDELAY_LOOP_COUNT; ulCount++ )
+ {
+     /*
+    	此循环仅是一个非常粗略的延迟实现。此处无任何操作。后继示例将用合适的延迟/休眠函数替换此粗略循环。
+     */
+ }
+ }
+}
+
+主函数 `main()` 在启动调度器之前创建任务
+int main( void )
+{
+ /*
+	在此处声明的变量在 FreeRTOS 调度器启动之后可能不再存在。请勿尝试从任务中访问由 main() 使用的栈上声明的变量。
+ */
+ /*
+	创建两个任务之一。请注意，在实际应用中，应检查xTaskCreate()调用的返回值，以确保任务创建成功。
+ */
+ xTaskCreate( vTask1, /* 指向实现任务功能的函数指针。*/
+ "Task 1",/* 任务名称*/
+ 1000, /* 栈深度 */
+ NULL, /* 本例未使用任务参数。 */
+ 1, /* 该任务将以优先级1运行。 */
+ NULL ); /* 本例未使用任务句柄。 */
+
+ //请以完全相同的方式并使用相同的优先级创建另一项任务。
+ xTaskCreate( vTask2, "Task 2", 1000, NULL, 1, NULL );
+ /* 启动调度器以使任务开始执行。 */
+ vTaskStartScheduler();
+ /*
+    若一切正常，main() 程序将不会执行至此处，因为调度器将开始运行所创建的任务。若main()程序执行至此处，则表示系统内存堆（heap memory）不足，无法创建空闲任务（idle task）或定时任务（timer task）（详见本书后续章节）。第三章将提供更多关于内存堆管理的详细信息。
+ */
+ for( ;; );
+}
+
+结果输出：
+C:\Temp>rtosdemo
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+```
+
+<a id="Code4.4.1.1-1"></a>
+
+结果[^4]表明了两个任务似乎同时执行；然而，这两个任务都在同一个处理器内核上执行，因此这种情况并不存在。实际上，两个任务都在迅速地进入并退出运行状态。由于两个任务的优先级相同，因此它们共享同一个处理器内核上的时间。[图4.4.1.1-1](#Pic4.4.1.1-1)展示了它们的实际执行模式。
+
+[图4.4.1.1-1](#Pic4.41.1-1)底部的箭头显示时间从时间t1开始向后推移。彩色线条显示了每个时间点正在执行的任务——例如，在时间t1和t2之间，任务1正在执行。
+
+*==两个示例任务的实际执行模式==*
+
+![两个示例4.1任务的实际执行模式](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251123025520556.png)
+
+<a id="Pic4.4.1.1-1"></a>
+
+任何时候只能存在一个任务处于运行状态。因此，当一个任务进入运行状态（任务被切换进来）时，另一个任务则进入非运行状态（任务被切换出去）。
+
+[代码块4.4.1.1-1](#Code4.4.1.1-1)在调度器启动之前从main()函数内部创建了这两个任务。同时，任务也可以从另一个任务内部创建。例如，任务2可以像[代码块4.4.1.2-2](#Code4.4.1.2-2)所示的那样从任务1内部创建。
+
+*==调度器启动后从另一个任务中创建任务==*
+
+```cpp
+void vTask1( void * pvParameters )
+{
+ const char *pcTaskName = "Task 1 is running\r\n";
+ volatile unsigned long ul; /* volatile to ensure ul is not optimized away. */
+ /*
+ * If this task code is executing then the scheduler must already have * been started. Create the other task before entering the infinite loop.
+ */
+ xTaskCreate( vTask2, "Task 2", 1000, NULL, 1, NULL );
+ for( ;; )
+ {
+ /* Print out the name of this task. */
+ vPrintLine( pcTaskName );
+ /* Delay for a period. */
+ for( ul = 0; ul < mainDELAY_LOOP_COUNT; ul++ )
+ {
+ /*
+ * This loop is just a very crude delay implementation. There is
+ * nothing to do in here. Later examples will replace this crude
+ * loop with a proper delay/sleep function.
+ */
+ }
+ }
+}
+```
+
+<a id="Code4.4.1.2-2"></a>
+
+#### 使用任务入参
+
+在示例4.4.1.1中创建的两个任务几乎完全相同，它们之间唯一的区别在于打印出的文本字符串。如果你创建一个单一任务实现的两个实例，并使用任务参数将字符串传递给每个实例，这将消除冗余。
+
+示例4.4.1.2用名为vTaskFunction()的单个任务函数替换了示例4.4.1.1中使用的两个任务函数，如[代码块4.4.1.2-1](#Code4.4.1.2-1)所示。请注意，任务参数被强制转换为char*以获取任务应打印出的字符串。
+
+*==所使用的单一任务函数曾用于在示例4.4.1.2中创建两个任务。==*
+
+```cpp
+void vTaskFunction( void * pvParameters )
+{
+ char *pcTaskName;
+ volatile unsigned long ul; /* volatile to ensure ul is not optimized away. */
+ /*
+ * The string to print out is passed in via the parameter. Cast this to a
+ * character pointer.
+ */
+ pcTaskName = ( char * ) pvParameters;
+ /* As per most tasks, this task is implemented in an infinite loop. */
+ for( ;; )
+ {
+ /* Print out the name of this task. */
+ vPrintLine( pcTaskName ); /* Delay for a period. */
+ for( ul = 0; ul < mainDELAY_LOOP_COUNT; ul++ )
+ {
+ /*
+ * This loop is just a very crude delay implementation. There is
+ * nothing to do in here. Later exercises will replace this crude
+ * loop with a proper delay/sleep function.
+ */
+ }
+ }
+}
+```
+
+<a id="Code4.4.1.2-1"></a>
+
+[代码块4.4.1.2-2](#Code4.4.1.2-2)创建了两个由vTaskFunction()实现的任务实例，利用任务的参数将不同的字符串传递给每个实例。这两个任务在FreeRTOS调度器的控制下独立执行，各自拥有自己的栈空间，因此它们各自拥有自己独立的pcTaskName和ul变量副本。
+
+*==示例4.4.1.2的main函数==*
+
+```cpp
+/*
+ * Define the strings that will be passed in as the task parameters. These are
+ * defined const and not on the stack used by main() to ensure they remain
+ * valid when the tasks are executing.
+ */
+static const char * pcTextForTask1 = "Task 1 is running";
+static const char * pcTextForTask2 = "Task 2 is running";
+int main( void )
+{
+ /*
+ * Variables declared here may no longer exist after starting the FreeRTOS
+ * scheduler. Do not attempt to access variables declared on the stack used
+ * by main() from tasks.
+ */
+ /* Create one of the two tasks. */
+ xTaskCreate( vTaskFunction, /* Pointer to the function that
+ implements the task. */
+ "Task 1", /* Text name for the task. This is to
+ facilitate debugging only. */
+ 1000, /* Stack depth - small
+microcontrollers
+ will use much less stack than
+this.*/
+ ( void * ) pcTextForTask1, /* Pass the text to be printed into
+ the task using the task parameter.
+*/
+ 1, /* This task will run at priority 1.
+*/
+ NULL ); /* The task handle is not used in
+ this example. */ /*
+ * Create the other task in exactly the same way. Note this time that
+ * multiple tasks are being created from the SAME task implementation
+ * (vTaskFunction). Only the value passed in the parameter is different.
+ * Two instances of the same task definition are being created.
+ */
+ xTaskCreate( vTaskFunction,
+ "Task 2",
+ 1000,
+ ( void * ) pcTextForTask2,
+ 1,
+ NULL );
+ /* Start the scheduler so the tasks start executing. */
+ vTaskStartScheduler();
+ /*
+ * If all is well main() will not reach here because the scheduler will
+ * now be running the created tasks. If main() does reach here then there
+ * was not enough heap memory to create either the idle or timer tasks
+ * (described later in this book). Chapter 3 provides more information on
+ * heap memory management.
+ */
+ for( ;; )
+ {
+ }
+}
+```
+
+<a id="Code4.4.1.2-2"></a>
+
+结果与[图4.4.1.1-1](#Pic4.41.1-1)一致。
+
+## 任务优先级
+
+FreeRTOS调度器始终确保可以运行的最高优先级任务是被选中进入运行状态的任务。具有相同优先级的任务会依次转换进入和退出运行状态。
+
+API函数创建任务时使用的uxPriority参数为任务赋予其初始优先级。vTaskPrioritySet() API函数用于在任务创建后更改任务的优先级。
+
+应用定义的编译时配置常量configMAX_PRIORITIES设置可用优先级的数量。数值较低的优先级表示低优先级任务，其中优先级0为最低优先级——因此有效优先级范围介于0至(configMAX_PRIORITIES – 1)。任意数量的任务可共享同一优先级。
+
+FreeRTOS 任务调度器存在两种用于选择运行状态任务（Running state task）的算法实现，而configMAX_PRIORITIES的最大允许值则取决于所使用的具体实现：
+
+### 通用调度器
+
+通用的调度程序是用C语言编写的，可以与FreeRTOS架构的所有端口一起使用。它不设configMAX_PRIORITEIS的上限。通常，建议尽量减少configMAX_PRIORITIES的值，因为更多的值需要更多的RAM，并且会导致更长的最坏情况执行时间。
+
+### 优化架构的调度器
+
+针对特定架构的优化实现是用架构特定的汇编代码编写的，其性能优于通用的C语言实现，并且对于所有configMAX_PRIORITIES值，最坏情况下的执行时间相同。
+
+针对优化的架构实现，在32位架构上对configMAX_PRIORITIES施加的最大值为32，在64位架构上施加的最大值为64。与通用方法相同，建议将configMAX_PRIORITIES保持在最实用的最低值，因为更高的值需要更多的RAM。
+
+在`FreeRTOSConfig.h`中设置`configUSE_PORT_optimized_TASK_SELECTION`为1以使用架构优化实现，或设置为0以使用通用实现。并非所有`FreeRTOS`内核都具有架构优化实现。对于具备优化实现的内核，默认值为`configUSE_PORT_optimized_TASK_SELECTION`为1，如果该值未定义。而对于不具备优化实现的内核，如果`configUSE_PORT_optimized_TASK_SELECTION`未定义，则默认值为0。
+
+## 时间测量与时钟中断
+
+
+
 [^1]: 第4.13节描述了调度算法。
 [^2]:  这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
 [^3]: 这是一个简化处理，因为heap_4用于存储堆区内部块大小的信息，因此两个分裂后的块实际总和将少于200字节。
+[^4]: 截图显示，在执行下一个任务之前，每个任务恰好打印一次其消息。这是使用FreeRTOS Windows模拟器产生的仿真场景。Windows模拟器并非真正实时。此外，向Windows控制台写入需要相对较长的时间，并导致一系列Windows系统调用。在具有快速且非阻塞打印功能的真实嵌入式目标上执行相同代码，可能导致在切换到其他任务运行之前，每个任务多次打印其字符串。
