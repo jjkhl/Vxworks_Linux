@@ -1309,9 +1309,101 @@ FreeRTOS 任务调度器存在两种用于选择运行状态任务（Running sta
 
 ## 时间测量与时钟中断
 
+第4.12节“调度算法”介绍了一项可选功能，称为“时间片”。时间片在迄今为止提供的示例中使用，并且是它们产生的输出中观察到的行为。在示例中，两个任务均以相同优先级创建，并且两个任务始终能够运行。因此，每个任务执行一个“时间片”，在时间片开始时进入运行状态，并在时间片结束时退出运行状态。在[图4.4.1.1-1](#Pic4.41.1-1)中，t1和t2之间的时间间隔等于一个时间片。
 
+调度器在每个时间片结束时执行，用于选择下一个要运行的任务[^5]。为此目的，使用了一种周期性中断，称为“滴答中断”（tick interrupt）。编译时配置常量configTICK_RATE_HZ设定了滴答中断的频率，并因此也决定了每个时间片的长度。例如，将configTICK_RATE_HZ设置为100（赫兹）会导致每个时间片持续10毫秒。两次滴答中断之间的时间间隔称为“滴答周期”——因此一个时间片等于一个滴答周期。
+
+[图4.6-1](#Pic4.6-1)在[图4.4.1.1-1](#Pic4.41.1-1)的基础上进一步扩展，以展示调度器的执行过程。在[图4.6-1](#Pic4.6-1)中，最上方的一行表示调度器的执行时刻，细箭头显示了从任务到滴答中断，再从滴答中断返回不同任务的执行顺序。
+
+configTICK_RATE_HZ 的最佳值取决于具体应用，尽管100是一个典型值。
+
+*==执行序列扩展以展示计时器中断的执行==*
+
+![执行序列扩展以展示计时器中断的执行](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251126003827790.png)
+
+<a id="Pic4.6-1"></a>
+
+FreeRTOS API调用以tick周期倍数来指定时间，也被成为"ticks"。pdMS_TO_TICKS()宏用以将毫秒为单位的事件转换为以tick为单位的时间。可用的分辨率取决于定义的tick频率，如果tick频率高于1kHz（如果configTICK_RATE_HZ大于1000），则不能使用pdMS_TO_TICKS()。[代码块4.6-1](#Code4.6-1)展示了如何使用pdMS_TO_TICKS()将指定为200毫秒的时间转换为等价于以tick为单位的时间。
+
+*==使用 `pdMS_TO_TICKS()` 宏将 200 毫秒转换为等效的滴答周期时间==*
+
+```cpp
+/* pdMS_TO_TICKS() 接受毫秒作为唯一的参数，并计算出等效的tick周期数。以下示例展示了如何将xTimeInTicks设置为与200毫秒等效的tick周期数。 */ 
+TickType_t xTimeInTicks = pdMS_TO_TICKS(200);
+```
+
+<a id="Code4.6-1"></a>
+
+使用pdMS_TO_TICKS()函数以毫秒为单位指定时间，而非直接以时钟滴答计数表示，可确保应用程序中指定的时间在时钟频率变更时保持不变。"时钟滴答计数"是指自调度器启动以来发生的时钟滴答中断总数，前提是时钟滴答计数未发生溢出。用户应用程序在指定延时周期时无需考虑溢出问题，因为FreeRTOS内部会自行管理时间一致性。 
+
+第4.12节："调度算法"描述了影响调度器何时选择新任务运行以及时钟滴答中断何时执行的配置常量。
+
+### 优先级实验
+
+调度器将始终确保能够运行的最高优先级任务是被选定为进入运行状态的任务。前文中的示例创建了两个相同优先级的任务，因此它们交替进入和退出运行状态。本示例探讨了当任务具有不同优先级时会发生什么。[代码块4.6.1-1](#Code4.6.1-1)展示了用于创建任务的代码，第一个任务优先级为1，第二个任务优先级为2。实现这两个任务的单个函数未发生变化；它仍然周期性地打印一条字符串，使用空循环来创建延迟。
+
+调度器总是会选择能够运行的最高优先级任务。任务2的优先级比任务1高，并且总是能够运行；因此，调度器总是选择任务2，而任务1从不执行。任务1被称为被任务2“饿死”，即它无法打印字符串，因为它从未处于运行状态。
+
+任务2始终可以运行，因为它从不需要等待任何事物——它要么在空循环中循环，要么向终端打印输出。
+
+*==创建两个不同优先级的任务==*
+
+```cpp
+/*
+   定义将作为任务参数传递的字符串。
+   这些字符串被定义为常量，而不是在堆栈上定义，以确保在任务执行时它们保持有效。
+ */
+static const char * pcTextForTask1 = "Task 1 is running";
+static const char * pcTextForTask2 = "Task 2 is running";
+int main( void )
+{
+ /* Create the first task with a priority of 1. */
+ xTaskCreate( vTaskFunction, /* Task Function */
+ "Task 1", /* Task Name */
+ 1000, /* Task Stack Depth */
+ ( void * ) pcTextForTask1, /* Task Parameter */
+ 1, /* Task Priority */
+ NULL );
+ /* Create the second task at a higher priority of 2. */
+ xTaskCreate( vTaskFunction, /* Task Function */
+ "Task 2", /* Task Name */
+ 1000, /* Task Stack Depth */
+ ( void * ) pcTextForTask2, /* Task Parameter */
+ 2, /* Task Priority */
+ NULL );
+ /* Start the scheduler so the tasks start executing. */
+ vTaskStartScheduler();
+ /* Will not reach here. */
+ return 0;
+}
+
+// 结果
+C:\Temp>rtosdemo
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+Task 2 is running
+```
+
+<a id="Code4.6.1-1"></a>
+
+*==当一项任务比另一项任务具有更高优先级时的执行模式，参见例4.6.1==*
+
+![当一项任务比另一项任务具有更高优先级时的执行模式，参见例4.6.1。](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251126011938374.png)
 
 [^1]: 第4.13节描述了调度算法。
 [^2]:  这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
 [^3]: 这是一个简化处理，因为heap_4用于存储堆区内部块大小的信息，因此两个分裂后的块实际总和将少于200字节。
 [^4]: 截图显示，在执行下一个任务之前，每个任务恰好打印一次其消息。这是使用FreeRTOS Windows模拟器产生的仿真场景。Windows模拟器并非真正实时。此外，向Windows控制台写入需要相对较长的时间，并导致一系列Windows系统调用。在具有快速且非阻塞打印功能的真实嵌入式目标上执行相同代码，可能导致在切换到其他任务运行之前，每个任务多次打印其字符串。
+[^5]: 值得注意的是，时间片结束并不是调度器选择新任务运行的唯一地点。正如我们将在本书中展示的那样，当当前执行的任务进入阻塞状态后，调度器也会立即选择一个新任务运行，或者当一个中断将一个更高优先级的任务移动到就绪状态时。
