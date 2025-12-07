@@ -1340,6 +1340,8 @@ TickType_t xTimeInTicks = pdMS_TO_TICKS(200);
 
 ### 优先级实验
 
+<a id="Exp4.3"></a>
+
 调度器将始终确保能够运行的最高优先级任务是被选定为进入运行状态的任务。前文中的示例创建了两个相同优先级的任务，因此它们交替进入和退出运行状态。本示例探讨了当任务具有不同优先级时会发生什么。[代码块4.6.1-1](#Code4.6.1-1)展示了用于创建任务的代码，第一个任务优先级为1，第二个任务优先级为2。实现这两个任务的单个函数未发生变化；它仍然周期性地打印一条字符串，使用空循环来创建延迟。
 
 调度器总是会选择能够运行的最高优先级任务。任务2的优先级比任务1高，并且总是能够运行；因此，调度器总是选择任务2，而任务1从不执行。任务1被称为被任务2“饿死”，即它无法打印字符串，因为它从未处于运行状态。
@@ -1402,8 +1404,714 @@ Task 2 is running
 
 ![当一项任务比另一项任务具有更高优先级时的执行模式，参见例4.6.1。](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251126011938374.png)
 
+<a id="Pic4.6.1-1"></a>
+
+## 扩展未运行状态
+
+迄今为止，创建的线程总是有处理任务需要执行，而从未需要等待任何事情——由于它们从未需要等待，它们总是能够进入运行状态。这种“持续处理”的任务具有有限的实用性，因为它们只能在最低优先级上创建。如果它们以其他优先级运行，它们将阻止低优先级任务永远运行。
+
+为了使这些任务变得有用，它们必须被重写为事件驱动的。一个事件驱动的任务只有在事件触发它之后才有工作（处理）要做，并且在那之前不能进入运行状态。调度器总是选择能够运行的最高优先级任务。如果由于等待事件而无法选择高优先级任务，调度器必须相反地选择能够运行的低优先级任务。 因此，编写事件驱动的任务意味着可以在不同的优先级下创建任务，而不会让高优先级任务耗尽处理时间，从而使低优先级任务得不到处理。
+
+### 阻塞状态
+
+一个等待事件的任务被称为处于“阻塞”状态，这是“未运行”状态的一个子状态。
+
+任务可以进入阻塞状态，以等待两种不同类型的事件：
+
+1. 时间相关事件——这些事件发生在延迟周期到期或达到绝对时间时。例如，一个任务可能进入阻塞状态，等待10毫秒过去。
+2. 同步事件——这些事件源自另一个任务或中断。例如，一个任务可能会进入阻塞状态以等待数据到达队列。同步事件涵盖了广泛的事件类型。
+
+FreeRTOS队列、二进制信号量、计数信号量、互斥锁、递归互斥锁、事件组、流缓冲区、消息缓冲区以及直接任务通知均可创建同步事件。后续章节将涵盖这些功能的大部分内容。
+
+一个任务可以阻塞于具有超时的同步事件上，从而有效地在两种类型的事件上同时阻塞。例如，一个任务可以选择等待最多10毫秒以等待队列中的数据到达。如果数据在10毫秒内到达，或者10毫秒内没有数据到达，任务将离开阻塞状态。
+
+### 悬置状态
+
+挂起（Suspended）也是非运行（Not Running）状态的一种亚状态。处于挂起状态的任务对调度器不可用。 进入挂起状态唯一途径是通过调用vTaskSuspend() API函数，而退出该状态唯一方式是调用vTaskResume()或xTaskResumeFromISR() API函数。绝大多数应用程序不使用挂起状态。
+
+### 完成状态转换图
+
+[图4.7.3-1](#Pic4.7.3-1)扩展了简化的状态图，以包括本节中描述的所有“未运行”子状态。到目前为止创建的示例任务都没有使用阻塞或挂起状态。它们仅在[图4.7.3-1](#Pic4.7.3-1)中用粗线所示的“就绪”状态和“运行”状态之间转换。
+
+*==全任务状态机==*
+
+![全任务状态机](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251129134249575.png)
+
+<a id="Pic4.7.3-1"></a>
+
+#### 示例使用阻塞状态创建延时
+
+目前所展示的示例中创建的所有任务均为“周期性”任务——它们在延迟一段时间后打印出字符串，然后再延迟，如此循环。延迟是通过使用空循环非常粗糙地生成的——任务通过轮询一个递增的循环计数器，直到达到一个固定值。[优先级实验](#Exp4.3)明显展示了这种方法的不利之处。在执行空循环期间，高优先级任务保持在运行状态，导致低优先级任务缺乏任何处理时间。
+
+以下是另一种形式的轮询的若干缺点，其中最重要的一点是它的低效率。在轮询期间，任务实际上没有真正的工作要做，但它仍然使用最大处理时间，从而浪费了处理器周期。示例通过将轮询的空循环替换为调用vTaskDelay() API函数来纠正这一行为，其原型和新的任务定义在[代码块4.7.3.1-1](#Code4.7.3.1-1)中显示。请注意，只有在FreeRTOSConfig.h中INCLUDE_vTaskDelay设置为1时，vTaskDelay() API函数才可用。
+
+```cpp
+void vTaskDelay( TickType_t xTicksToDelay );
+
+void vTaskFunction( void * pvParameters )
+{
+ char * pcTaskName;
+ const TickType_t xDelay250ms = pdMS_TO_TICKS( 250 );
+ /*
+	打印字符串通过参数传入。将其转换为字符指针类型。
+ */
+ pcTaskName = ( char * ) pvParameters;
+ /* 根据大多数任务的情况，该任务是在一个无限循环中实现的。 */
+ for( ;; )
+ {
+ /* Print out the name of this task. */
+ vPrintLine( pcTaskName );
+ /*
+在一定时间内延迟。此时，使用vTaskDelay()函数调用，该函数将任务置于阻塞状态，直到延迟期满。参数指定以‘ticks’为单位的时间，并使用pdMS_TO_TICKS()宏（其中xDelay250ms常量已声明）将250毫秒转换为等效的tick时间。
+*/
+ vTaskDelay( xDelay250ms );
+ }
+}
+
+C:\Temp>rtosdemo
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+Task 2 is running
+Task 1 is running
+```
+
+<a id="Cpde4.7.3.1-1"></a>
+
+vTaskDelay函数参数：
+
+* xTicksToDelay
+  * 调用任务在转变为就绪状态之前，处于阻塞状态的次数取决于被打断的tick的数目。
+  * 例如，若在计时器计数为10,000时执行名为vTaskDelay(100)的任务，则该任务会立即进入阻塞状态，并保持在阻塞状态直至计时器计数达到10,100。
+  * 宏定义 `pdMS_TO_TICKS()` 可用于将指定的时间戳（以毫秒计）转换为以时钟周期计的时间戳。例如，调用 `vTaskDelay(pdMS_TO_TICKS(100))` 将导致调用任务的阻塞状态保持 100 毫秒。
+
+[图4.7.3.1-1](#Pic4.7.3.1-1)所示的执行顺序解释了为何两个任务即使在不同的优先级下创建，仍能运行。为了简化起见，调度器自身的执行过程被省略了。
+
+*==使用vTaskDelay()代替空循环时的执行顺序==*
+
+![使用vTaskDelay()代替空循环时的执行顺序](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251129215914486.png)
+
+<a id="Pic4.7.3.1-1"></a>
+
+仅改变了两个任务的执行方式，并未改变其功能。[图4.6-1](#Pic4.6-1)和[图4.7.3.1-1](#Pic4.7.3.1-1)对比，可以清晰看到，这种功能的实现变得更加高效。
+
+[图4.6-1](#Pic4.6-1)展示了任务使用空循环来创建延迟，从而始终能够运行的执行模式。在这种情况下，所有任务共同使用了100%的可用处理器时间。而[图4.7.3.1-1](#Pic4.7.3.1-1)则展示了当任务在整个延迟期间都处于阻塞状态的执行模式。只有在它们实际需要执行工作（例如，仅仅需要打印一条消息）时，这些任务才会使用处理器时间，因此仅使用了极小比例的可用处理时间。
+
+在[图4.7.3.1-1](#Pic4.7.3.1-1)所示的场景中，每当任务离开“阻塞”状态后，它们会在重新进入“阻塞”状态之前执行一小段时间（一个tick周期的一部分）。大多数时候，并没有可以运行的应用任务（即，没有处于“就绪”状态的应用任务），因此也就没有可以被选择进入“运行”状态的应用任务。在这种情况持续期间，空闲任务运行。分配给空闲任务的处理时间是系统中剩余处理能力的一个度量。通过使用实时操作系统（RTOS），仅通过允许应用程序完全基于事件驱动，就可以显著增加系统的剩余处理能力。
+
+[图4.7.3.1-2](#Pic4.7.3.1-1)中的粗线显示了示例4.7.3.1中任务执行的转换，每个任务现在都会经过阻塞状态，然后再返回到就绪状态。
+
+*==粗线表示了示例4.7.3.1中的任务所执行的状态转换。==*
+
+![粗线表示了示例4.7.3.1中的任务所执行的状态转换。](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251129230312393.png)
+
+<a id="Pic4.7.3.1-1"></a>
+
+### vTaskDelayUntil函数
+
+vTaskDelayUntil() 与 vTaskDelay() 类似。正如刚才所演示的，vTaskDelay() 的参数指定了调用 vTaskDelay() 的任务与该任务再次退出阻塞状态之间应发生的tick中断次数。任务在阻塞状态下停留的时间由 vTaskDelay() 的参数指定，但任务离开阻塞状态的时间相对于 vTaskDelay() 被调用时的时间。
+
+vTaskDelayUntil() 函数的参数指定的是调用的任务应当从阻塞状态转移到就绪状态的确切 tick 计数值。当需要固定执行周期（即希望任务以固定的频率周期性执行）时，应使用 vTaskDelayUntil() 接口函数。与 vTaskDelay() 不同的是，调用任务被解阻的状态是绝对时间，而不是相对于函数被调用的时间（这是 vTaskDelay() 的情况）。
+
+vTaskDelayUntil参数：
+
+* pxPreviousWakeTime
+  * 此参数以假设vTaskDelayUntil()用于实现一个周期性执行且具有固定频率的任务为前提进行命名。在此情况下，pxPreviousWakeTime存储了任务上次离开阻塞状态的时间（即“被唤醒”）。此时间被用作参考点，以计算任务下次离开阻塞状态的时间。
+  * pxPreviousWakeTime 指针所指向的变量在 vTaskDelayUntil() 函数中会自动更新；通常情况下，应用程序代码不会对其进行修改，但在首次使用前必须将其初始化为当前的滴答计数。
+* xTimeIncrement
+  * 此参数亦如此命名，其前提是vTaskDelayUntil()函数正被用于实现一个以固定频率周期性执行的任务，而该频率由xTimeIncrement值设定。
+  * xTimeIncrement以“滴答”为单位指定。可以使用宏pdMS_TO_TICKS()将指定为毫秒的时间转换为以滴答为单位的时间。
+
+在[代码块4.7.4-1](#Code4.7.4-1)中创建的两个任务为周期性任务，但使用vTaskDelay()并不能保证它们运行频率的固定性，因为任务离开阻塞状态的时间相对于它们调用vTaskDelay()的时间是相对的。将任务转换为使用vTaskDelayUntil()而不是vTaskDelay()可以解决这一潜在问题。
+
+*==将使用 vTaskDelayUntil() 函数实现示例任务。==*
+
+```cpp
+void vTaskDelayUntil( TickType_t * pxPreviousWakeTime,
+ TickType_t xTimeIncrement );
+
+void vTaskFunction( void * pvParameters )
+{
+ char * pcTaskName;
+ TickType_t xLastWakeTime;
+ /*
+ * The string to print out is passed in via the parameter. Cast this to a
+ * character pointer.
+ */ pcTaskName = ( char * ) pvParameters;
+ /*
+变量xLastWakeTime 需要初始化为当前的tick 计数。请注意，这是唯一一次显式写入该变量的操作。在执行vTaskDelayUntil()之后，xLastWakeTime 自动更新。
+ */
+ xLastWakeTime = xTaskGetTickCount();
+ /* As per most tasks, this task is implemented in an infinite loop. */
+ for( ;; )
+ {
+ /* Print out the name of this task. */
+ vPrintLine( pcTaskName );
+ /*
+本任务应精确执行每250毫秒一次。根据vTaskDelay()函数，时间以“节拍”为单位测量，而pdMS_TO_TICKS()宏用于将毫秒转换为节拍。 在vTaskDelayUntil()函数内，xLastWakeTime自动更新，因此任务本身不需要明确更新该变量。
+ */
+ vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 250 ) );
+ }
+}
+```
+
+<a id="Code4.7.4-1"></a>
+
+#### 将阻塞和非阻塞任务结合起来
+
+之前的例子单独考察了轮询和阻塞任务的执行行为。此示例重申了我们之前关于预期系统行为的讨论，并展示了当这两个方案结合执行时的执行序列，如下：
+
+1. 创建两个优先级为1的任务，这些任务不间断打印一个字符串
+   1. 这些任务永远不会发起可能导致它们进入阻塞状态的API函数调用，因此它们始终处于准备就绪（Ready）或运行（Running）状态。这类任务被称为“持续处理”任务，因为它们总是有工作要做（尽管在这种情况下，工作相对简单）。[代码块4.7.4.1-1](#Code4.7.4.1-1)展示了连续处理任务的源代码。
+
+2. 第三项任务被创建，其优先级为2，高于其他两项任务的优先级。第三项任务同样输出字符串，但这一次是周期性地，因此它使用vTaskDelayUntil() API函数在每次打印迭代之间将自己置于阻塞状态。
+
+```cpp
+void vContinuousProcessingTask( void * pvParameters )
+{
+ char * pcTaskName;
+ /*
+ * The string to print out is passed in via the parameter. Cast this to a
+ * character pointer.
+ */
+ pcTaskName = ( char * ) pvParameters;
+ /* As per most tasks, this task is implemented in an infinite loop. */
+ for( ;; )
+ {
+ /*
+ * Print out the name of this task. This task just does this repeatedly
+ * without ever blocking or delaying.
+ */
+ vPrintLine( pcTaskName );
+ }
+}
+
+void vPeriodicTask( void * pvParameters )
+{
+ TickType_t xLastWakeTime;
+ const TickType_t xDelay3ms = pdMS_TO_TICKS( 3 );
+ /*
+ * The xLastWakeTime variable needs to be initialized with the current tick
+ * count. Note that this is the only time the variable is explicitly
+ * written to. After this xLastWakeTime is managed automatically by the
+ * vTaskDelayUntil() API function.
+ */
+ xLastWakeTime = xTaskGetTickCount();
+ /* As per most tasks, this task is implemented in an infinite loop. */
+ for( ;; )
+ {
+ /* Print out the name of this task. */
+ vPrintLine( "Periodic task is running" );
+ /*
+ * The task should execute every 3 milliseconds exactly – see the
+ * declaration of xDelay3ms in this function.
+ */
+ vTaskDelayUntil( &xLastWakeTime, xDelay3ms );
+ }
+}
+
+// 输出
+Continuous task 2 running
+Continuous task 2 running
+Periodic task is running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 2 running
+Continuous task 2 running
+Continuous task 2 running
+Continuous task 2 running
+Continuous task 2 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Continuous task 1 running
+Periodic task is running
+Continuous task 2 running
+Continuous task 2 running
+```
+
+![示例4.7.4.1运行示例](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251130024215025.png)
+
+## 空闲任务与空闲任务钩子
+
+上述示例创建的任务大部分时间都处于阻塞状态。这种状态下，它们无法运行，因此调度程序无法选择它们。
+
+在调用 vTaskStartScheduler() 时，为了确保至少有一项任务能够进入 Running 状态[^6]，调度器会自动创建一个 Idle 任务。Idle 任务除了在循环中等待之外几乎不执行其他操作，因此与前面的示例中的任务一样，它总是能够运行。
+
+空闲任务具有最低的优先级（优先级为零），以确保它永远不会阻止具有较高优先级的应用程序任务进入运行状态。然而，应用程序设计师可以创建优先级与空闲任务相同或相同的任务，如果需要的话。FreeRTOSConfig.h中的编译时配置常量configIDLE_SHOULD_YIELD可以用来防止空闲任务消耗本应更高效分配给具有相同优先级0的应用程序任务的处理时间。第4.12节，调度算法，描述了configIDLE_SHOULD_YIELD。
+
+运行于最低优先级确保了空闲任务在更高优先级任务进入就绪状态时立即从运行状态过渡出来。这可以在[图4.7.3.1-1](#Pic4.7.3.1-1)中的时间tn观察到，此时空闲任务立即被交换出去，以便在任务2离开阻塞状态的同时执行。任务2被说成是抢占空闲任务。抢占是自动发生的，且无需抢占任务的知晓。
+
+> 注：如果一个任务使用vTaskDelete() API函数删除自身，那么确保空闲任务不缺乏处理时间至关重要。这是因为空闲任务负责清理由自行删除的任务所使用的内核资源。
+
+### 空闲任务钩子
+
+通过使用空闲钩（或空闲回调）函数，可以直接在空闲任务中添加针对特定应用的功能。空闲钩函数是一种在空闲任务循环的每一次迭代后自动被调用的函数。
+
+空闲任务钩子的常见用途包括：
+
+1. 在不为执行目的而创建应用程序任务所带来的RAM开销的情况下，执行低优先级、后台或连续处理功能。
+2. 测量剩余处理能力的数量。（空闲任务仅在所有更高优先级的应用任务均无工作可执行时才会运行；因此，测量分配给空闲任务的处理时间可以提供关于剩余处理时间的明确指示。）
+3. 将处理器置于低功耗模式，提供了一种简便且自动化的方法，以便在没有应用程序处理需要执行时随时节省功耗（尽管其所能实现的节能效果不如tick-less空闲模式）。
+
+### 在实现空闲任务钩子函数时存在的限制
+
+空闲任务钩子函数必须遵守以下规则：
+
+1. 闲置任务钩子函数绝不应尝试阻塞或挂起自身。任何形式的阻止空闲任务都可能导致一种情况，即没有任务可供进入运行状态。
+2. 若应用程序任务使用vTaskDelete() API函数删除自身，则空闲任务钩子必须在合理时间内返回给调用者。这是因为空闲任务负责清理被删除任务所分配的内核资源。若空闲任务永久驻留在空闲钩子函数中，则清理工作无法进行。
+
+空闲任务钩子函数必须具有下面代码块中所示的名字和原型。
+
+```cpp
+void vApplicationIdleHook( void );
+```
+
+#### 示例定义一个空闲任务钩子函数
+
+对阻塞型任务延时API（blocking vTaskDelay() API）的使用导致产生了大量空闲时间，即应用程序任务均处于阻塞状态时，空闲任务（Idle task）得以执行的时间段。示例4.7通过引入空闲钩子函数（Idle hook function）利用了这种空闲时间，其源代码如下所示。
+
+```cpp
+/* Declare a variable that will be incremented by the hook function. */
+volatile unsigned long ulIdleCycleCount = 0UL;
+/*
+ * Idle hook functions MUST be called vApplicationIdleHook(), take no
+ * parameters, and return void.
+ */
+void vApplicationIdleHook( void )
+{
+ /* This hook function does nothing but increment a counter. */
+ ulIdleCycleCount++;
+}
+
+/*
+为了使空闲钩子函数被调用，在FreeRTOSConfig.h文件中必须将configUSE_IDLE_HOOK设置为1。实现创建的任务的函数稍作修改，以便打印ulIdleCycleCount值，如下所示。
+*/
+
+void vTaskFunction( void * pvParameters )
+{
+ char * pcTaskName;
+ const TickType_t xDelay250ms = pdMS_TO_TICKS( 250 );
+ /*
+ * The string to print out is passed in via the parameter. Cast this to
+ * a character pointer.
+ */
+ pcTaskName = ( char * ) pvParameters;
+ /* As per most tasks, this task is implemented in an infinite loop. */
+ for( ;; )
+ {
+ /*
+ * Print out the name of this task AND the number of times
+ * ulIdleCycleCount has been incremented.
+ */
+ vPrintLineAndNumber( pcTaskName, ulIdleCycleCount );
+ /* Delay for a period of 250 milliseconds. */
+ vTaskDelay( xDelay250ms ); }
+}
+
+// 可以观察到，空闲任务钩子函数在应用程序任务每次迭代之间执行约400万次（迭代次数取决于硬件速度）。
+C:\Temp>rtosdemo
+Task 2 is running
+ulIdleCycleCount = 0
+Task 1 is running
+ulIdleCycleCount = 0
+Task 2 is running
+ulIdleCycleCount = 3869504
+Task 1 is running
+ulIdleCycleCount = 3869504
+Task 2 is running
+ulIdleCycleCount = 8564623
+Task 1 is running
+ulIdleCycleCount = 8564623
+Task 2 is running
+ulIdleCycleCount = 13181489
+Task 1 is running
+ulIdleCycleCount = 13181489
+Task 2 is running
+ulIdleCycleCount = 17838406
+Task 1 is running
+ulIdleCycleCount = 17838406
+Task 2 is running
+```
+
+## 改变任务优先级
+
+### vTaskPrioritySet函数
+
+vTaskPrioritySet() API 函数用于在调度器启动后更改任务优先级。vTaskPrioritySet() API 函数仅在 FreeRTOSConfig.h 中将 INCLUDE_vTaskPrioritySet 设置为 1 时才可用。
+
+```cpp
+void vTaskPrioritySet( TaskHandle_t pxTask, UBaseType_t uxNewPriority );
+```
+
+vTaskPrioritySet参数：
+
+* pxTask
+  * 正在被修改优先级的任务句柄（即目标任务）。有关获取任务句柄的信息，请参阅 xTaskCreate() API 函数的 pxCreatedTask 参数，或 xTaskCreateStatic() API 函数的返回值。
+  * 任务可以通过用有效的任务句柄替代NULL来改变自己的优先级。
+* uxNewPriority
+  * 任务优先级的设定重点。这会自动限制到最大可用优先级（configMAX_PRIORITIES-1），其中configMAX_PRIORITIES是在FreeRTOSConfig.h头文件中作为编译时常量设置的。
+
+### uxTaskPriority函数
+
+uxTaskPriorityGet() API函数用于获取任务的优先级。当在FreeRTOSConfig.h中设置INCLUDE_uxTaskPriorityGet为1时，该uxTaskPriorityGet() API函数才可用。
+
+```cpp
+UBaseType_t uxTaskPriorityGet(TaskHandle_t xTask);
+```
+
+uxTaskPriorityGet入参和返回值：
+
+* pxTask
+  * 被查询优先级的任务句柄（主题任务）。有关如何获取任务句柄的信息，请参阅xTaskCreate() API函数的pxCreatedTask参数。
+  * 一项任务可以通过在有效任务句柄的位置传递NULL来查询其自身的优先级。
+* 返回值
+  * 当前分配给查询任务的优先级。
+
+### 示例：改变任务优先级
+
+调度程序总是选择状态为就绪的最高优先级任务进入运行状态。该通过使用vTaskPrioritySet() API函数相对地改变两个任务之间的优先级来演示这一点。 
+
+示例创建了两个不同优先级的任务。两个任务都没有调用任何可能导致其进入阻塞状态的API函数，因此它们始终处于就绪状态或运行状态。因此，具有最高相对优先级的任务将始终是被调度器选为运行状态的任务。
+
+1. Task1以最高优先级创建，因此它被保证最先运行。在提高任务2优先级之前任务1先打印几行字符串。
+2. Task2一旦具有最高相对优先级，就会开始执行（进入运行状态）。在任何时候，只有一项任务可以处于运行状态，因此当Task2处于运行状态时，任务1处于就绪状态。
+3. 任务2在将其自身优先级重置回低于任务1的优先级之前，会打印一条消息。
+4. 当任务2将其优先级降级后，任务1再次成为最高优先级任务，因此任务1重新进入运行状态，迫使任务2回到就绪状态。
+
+每个任务都可以通过使用NULL代替有效的任务句柄来查询和设置自身的优先级。任务句柄仅在任务需要引用除自身以外的其他任务时才需要，例如当任务1更改任务2的优先级时。为了允许任务1执行此操作，在创建任务2时获取并保存任务2的句柄，如下注释所示。
+
+```cpp
+void vTask1( void * pvParameters )
+{
+ UBaseType_t uxPriority;
+ /*
+此任务总是在任务 2 之前运行，因为它是在更高的优先级下创建的。 neither Task 1 或 Task 2 永远不会阻塞，因此它们总是处于运行或就绪状态。
+ */
+ /*
+查询此任务运行的优先级 - 传递 NULL 表示 
+"返回调用任务的优先级"。
+ */
+ uxPriority = uxTaskPriorityGet( NULL );
+ for( ;; )
+ {
+ /* Print out the name of this task. */
+ vPrintLine( "Task 1 is running" );
+ /*
+将任务 2 的优先级设置为任务 1 优先级之上将导致任务 2 立即开始运行（因为此时任务 2 的优先级高于两个创建的任务中的较高优先级）。
+请注意在调用 vTaskPrioritySet() 时使用的任务 2 句柄 (xTask2Handle)。
+ */
+ vPrintLine( "About to raise the Task 2 priority" );
+ vTaskPrioritySet( xTask2Handle, ( uxPriority + 1 ) );
+ /*
+任务1仅当其优先级高于任务2时才会运行。 
+因此，为了使此任务达到此点，任务2必须已经执行完毕并将其优先级降低到此任务的优先级以下。
+ */
+ }
+}
+
+void vTask2( void * pvParameters )
+{
+ UBaseType_t uxPriority;
+ /*
+任务1将始终在当前任务之前执行，因为任务1是以更高的优先级创建的。任务1和任务2均不会发生阻塞，因此它们始终处于运行状态或就绪状态。
+ *
+查询该任务运行的优先级 - 传入NULL表示“返回调用任务的优先级”
+ */
+ uxPriority = uxTaskPriorityGet( NULL );
+ for( ;; )
+ {
+ /*
+为使此项任务达到当前状态，任务1必须已运行，并已将此任务（的优先级）设高于其自身。
+ */
+ /* Print out the name of this task. */
+ vPrintLine( "Task 2 is running" );
+ /*
+ * 将此任务优先级恢复至其原始值。
+   将任务句柄传递为NULL表示“更改调用任务的优先级”。将优先级设置为低于任务1的优先级将导致任务1立即重新开始运行——抢占此任务。
+ */
+ vPrintLine( "About to lower the Task 2 priority" );
+ vTaskPrioritySet( NULL, ( uxPriority - 2 ) );
+ }
+}
+
+/* 声明一个用于存储任务2句柄的变量。*/
+TaskHandle_t xTask2Handle = NULL;
+int main( void )
+{
+ /* 
+ 创建优先级为2的第一个任务。任务参数未使用，设置为NULL。任务句柄也未使用，同样设置为NULL。
+ */
+ xTaskCreate( vTask1, "Task 1", 1000, NULL, 2, NULL );
+ /* The task is created at priority 2 ______^. */
+ /*
+创建第二个任务，优先级为1 - 这个优先级低于为任务1分配的优先级。这次，任务参数并未使用，因此设置为NULL。然而，这次需要任务句柄，因此将xTask2Handle的地址作为最后一个参数传递进来。
+ */
+ xTaskCreate( vTask2, "Task 2", 1000, NULL, 1, &xTask2Handle );
+ /* The task handle is the last parameter _____^^^^^^^^^^^^^ */
+ /* 启动调度器以使任务开始执行。 */
+ vTaskStartScheduler();
+ /*
+如果一切顺利，main() 函数将不会到达此处，因为调度器现在将运行已创建的任务。如果main()函数确实到达此处，则说明堆内存不足以创建空闲任务或计时器任务（本书稍后部分将进行描述）。第二章提供了有关堆内存管理的更多信息。
+ */
+ for( ;; )
+ {
+ }
+}
+
+// 输出
+Task1 is running
+About to raise the Task2 priority
+Task2 is running
+About to lower the Task2 priority
+Task1 is running
+About to raise the Task2 priority
+Task2 is running
+About to lower the Task2 priority
+Task1 is running
+About to raise the Task2 priority
+Task2 is running
+About to lower the Task2 priority
+Task1 is running
+```
+
+![示例4.9.3任务执行顺序](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251201002805922.png)
+
+## 删除任务
+
+### vTaskDelet函数
+
+vTaskDelete() API函数用于删除任务。vTaskDelete() API函数仅在FreeRTOSConfig.h中将INCLUDE_vTaskDelete设置为1时才可用。
+
+在运行时不断创建和删除任务并非良策，因此，当您发现自己需要此功能时，请考虑其他设计选项，例如重用任务。
+
+删除的任务不再存在，无法再次进入运行状态。
+
+如果使用动态内存分配创建的任务后来自行删除，空闲任务负责释放为其分配的内存，例如被删除任务的数据结构和堆栈。因此，在这种情况下，应用程序不应完全剥夺空闲任务所有的处理时间，这一点非常重要。
+
+> 仅当任务被删除时，由内核自身为该任务分配的内存会被自动释放。 任何在任务实现过程中分配的内存或其他资源，如果不再需要，必须明确地释放。
+
+vTaskDelete参数：
+
+* pxTaskToDelete
+  * 待删除任务的句柄（主任务）。有关获取任务句柄的信息，请参阅xTaskCreate() API函数的pxCreatedTask参数以及xTaskCreateStatic() API函数的返回值。
+  * 可以将句柄替换为NULL来删除自己
+
+```cpp
+void vTaskDelete(TaskHandle_t xTaskToDelete);
+```
+
+#### 示例：删除任务
+
+简单示例流程介绍：
+
+1. 任务1由main()创建，优先级为1。当它运行时，在优先级2下创建任务2。任务2现在是最高优先级任务，因此它立即开始执行。
+2. 任务2除删除自身外不做任何其他操作。它可以通过向vTaskDelete()传递NULL来删除自身，但为了演示目的，它使用了自身的任务句柄。列表4.29显示了任务2的源代码。
+3. 当任务2被删除后，任务1再次成为最高优先级任务，因此它继续执行——此时它调用vTaskDelay()阻塞一小段时间。
+4. 空闲任务在任务1处于阻塞状态时执行，并释放了现在已删除的任务2所分配的内存。
+
+```cpp
+int main(void)
+{
+    xTaskCreate(vTask1, "Task 1", 1000, NULL, 1, NULL);
+    vTaskStartScheduler();
+    for(;;)
+    {
+        
+    }
+}
+
+TaskHandle_t xTask2Handle = NULL;
+
+void vTask1(void* pvParameters)
+{
+    const TickType_t xDelay100ms = pdMS_TO_TICKS(100UL);
+    for(;;)
+    {
+        vPrintLine("Task 1 is running");
+        
+        xTaskCreate(vTask2, "Task 2", 1000, NULL, 2, &xTask2Handle);
+        
+        vTaskDelay(xDelay100ms);
+    }
+}
+
+void vTask2( void * pvParameters )
+{
+ /*
+	任务2在启动时自我删除。
+	为实现这一点，可以通过调用vTaskDelete()并使用NULL作为参数实现。
+	为了演示目的，它调用呢vTaskDelete()并传入自己的任务句柄。
+ */
+ vPrintLine( "Task 2 is running and about to delete itself" );
+ vTaskDelete( xTask2Handle );
+}
+
+// 输出
+C:\Temp>rtosdemo
+Task1 is running
+Task2 is running and about to delete itself
+Task1 is running
+Task2 is running and about to delete itself
+Task1 is running
+Task2 is running and about to delete itself
+Task1 is running
+Task2 is running and about to delete itself
+Task1 is running
+Task2 is running and about to delete itself
+Task1 is running
+Task2 is running and about to delete itself
+Task1 is running
+Task2 is running and about to delete itself
+Task1 is running
+Task2 is running and about to delete itself
+```
+
+![示例：删除任务流程图](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251202011649214.png)
+
+## 线程局部存储和可重入性
+
+线程本地存储允许应用程序开发者在每个任务的任务控制块中存储任意数据。该特性通常用于存储本应被非可重入函数存储在全局变量中的数据。
+
+可重入函数是指可以在多个线程中安全运行且不会产生副作用的函数。在多线程环境中使用非可重入函数且没有线程局部存储时，必须特别注意在临界区检查这些函数调用的非正常结果。过度使用临界区会降低实时操作系统（RTOS）的性能，因此通常更倾向于使用线程局部存储而非临界区。
+
+迄今为止，线程本地存储最普遍的应用是ISO C标准中C标准库及POSIX系统所使用的errno全局变量。errno全局变量用于为常见的标准库函数（如strtof和strtol）提供扩展的函数结果或错误代码。
+
+### C运行时线程局部存储实现
+
+大多数内嵌式libc实现提供了API接口，以确保非递归函数能够在多线程环境中正确运行。FreeRTOS包含了对两个常用开源库（newlib和picolibc）递归API的支持。这些预先构建的C运行时线程局部存储实现可以通过在项目中的FreeRTOSConfig.h文件中定义以下列出的相应宏来启用。
+
+* configUSE_NEWLIB_REENTRANT for newlib
+* configUSE_PICOLIBC_TLS for picolibc
+
+### 自定义C运行时线程本地存储
+
+应用程序开发人员可以在其FreeRTOSConfig.h文件中定义以下宏来实施线程本地存储：
+
+* 定义`configUSE_C_RUNTIME_TLS_SUPPORT`为 1 以启用 C 运行时线程局部存储支持。
+* 将`configTLS_BLOCK_TYPE`定义为应用于存储C运行时线程局部存储数据的c类型。
+* 定义`configINIT_TLS_BLOCK`为在初始化C运行时线程本地存储块时应执行的C代码。
+* 将`configSET_TLS_BLOCK`定义为C代码，该代码应在切换到新任务时运行。
+* 将`configDEINIT_TLS_BLOCK`定义为C代码，该代码应在解除初始化C运行时线程局部存储块时运行。
+
+### 应用线程本地存储
+
+除了C运行时线程局部存储之外，应用程序开发者还可以定义一组特定于应用程序的指针，这些指针将被包含在任务控制块中。此功能通过在项目中设置FreeRTOSConfig.h文件中的configNUM_THREAD_LOCAL_STORAGE_POINTERS为非零数来启用。 如下面中定义的vTaskSetThreadLocalStoragePointer和pvTaskGetThreadLocalStoragePointer函数分别用于在运行时设置和获取每个线程局部存储指针的值。
+
+*==线程本地存储指针函数原型==*
+
+```cpp
+void * pvTaskGetThreadLocalStoragePointer( TaskHandle_t xTaskToQuery, BaseType_t xIndex);
+void vTaskSetThreadLocalStoragePointer( TaskHandle_t xTaskToSet, BaseType_t xIndex, void * pvValue);
+```
+
+## 调度算法
+
+### 任务状态与事件回顾
+
+实际执行的任务（使用处理时间）处于运行状态。在单核处理器上，任何给定时刻只能存在一个任务处于运行状态。也有可能在多核处理器（异步多处理，AMP）上运行FreeRTOS，或者让FreeRTOS在多个核心上调度任务（同步多处理，SMP）。这两种情况在此处并未被描述。
+
+不在实际运行中的任务，但又不在阻塞状态或挂起状态中的任务，处于就绪状态。处于就绪状态的任务可供调度程序选择，作为即将进入运行状态的任务。调度程序总是会选择优先级最高的就绪状态任务，使其进入运行状态。
+
+任务在阻塞状态时可以等待事件的发生，并且在事件发生时会自动返回到就绪状态。时间事件发生在特定时间点，例如，当一个阻塞时间到期时，通常用于实现周期性或超时行为。同步事件发生在任务或中断服务例程通过任务通知、队列、事件组、消息缓冲区、流缓冲区或各种类型的信号量发送信息时。它们通常用于信号异步活动，例如数据到达外设。
+
+### 选择调度算法
+
+调度算法是决定将处于就绪状态的任务转换为运行状态的软件例行程序。
+
+到目前为止，所有的示例都使用了相同的调度算法，但可以通过配置常量configUSE_PREEMPTION和configUSE_TIME_SLICING来更改算法。这两个常量在FreeRTOSConfig.h中定义。
+
+第三个配置常量 `configUSE_TICKLESS_IDLE` 也会影响调度算法，因为其使用可能会导致时钟中断在较长的时间段内完全被关闭。`configUSE_TICKLESS_IDLE` 是一个高级选项，专门用于必须最大限度地减少功耗的应用程序。本节的描述假设 `configUSE_TICKLESS_IDLE` 设置为 0，这是如果该常量未定义时的默认设置。
+
+在所有可能的单核配置中，FreeRTOS调度器会按次序选择优先级相同的任务。这种“轮流执行”的策略通常被称为“轮转调度”。轮转调度算法并不保证同等优先级的任务间共享时间完全相等，仅保证同等优先级的就绪状态任务会依次进入运行状态。
+
+*==FreeRTOSConfig.h 中用于配置内核调度算法的设置==*
+
+| 调度算法                 | 优先处理 | configUSE_PREEMPTION | configUSE_TIME_SLICING |
+| ------------------------ | -------- | -------------------- | ---------------------- |
+| 时间分片下的抢占式调度   | 1        | 1                    | 1                      |
+| 非时间分片下的抢占式调度 | 1        | 1                    | 0                      |
+| 协作式调度               | 0        | 0                    | Any                    |
+
+### 优先级抢占式调度算法结合时间片轮转调度
+
+在表4.12.2-1中所示的配置将FreeRTOS调度器设置为使用一种称为“固定优先级抢占式调度与时间片轮转”的调度算法，这是大多数小型RTOS应用程序使用的算法，也是本书到目前为止所呈现的所有示例所采用的算法。下表提供了该算法名称中使用的术语描述。
+
+对用于描述调度策略的术语进行解释：
+
+* 固定优先级：固定优先级的调度算法不会改变所调度任务的优先级，但也不阻止任务本身更改自身的优先级或其他任务的优先级。
+* 抢占式：抢占调度算法会在一个具有比当前运行任务更高优先级的新任务进入就绪状态时，立即将当前运行状态的任务“抢占”。被抢占意味着该任务被非自愿地从运行状态中移出并进入就绪状态（无需明确地让出或阻塞），以允许另一个任务进入运行状态。任务抢占可以在任何时间发生，而不仅仅是在RTOS的计时中断期间。
+* 时间分片：时间片切分用于在同等优先级的任务之间共享处理时间，即使这些任务没有显式地让出处理器或进入阻塞状态。描述为使用时间片切分的调度算法会在每个时间片结束时，如果存在具有与当前运行任务相同优先级的就绪状态任务，则选择一个新的任务进入运行状态。时间片等于两次实时操作系统（RTOS）时钟中断之间的时间间隔。
+
+[图4.12.3-1](#Pic4.12.3-1)和[图4.12.3-2](#Pic4.12.3-2)展示了在使用固定优先级抢占式调度算法并结合时间片机制时，任务如何被调度的。[图4.12.3-1](#Pic4.12.3-1)展示了当应用程序中的所有任务具有唯一优先级时，任务被选择进入运行状态的顺序。[图4.12.3-2](#Pic4.12.3-2)展示了当应用程序中的两个任务共享同一优先级时，任务被选择进入运行状态的顺序。
+
+* 空闲任务：在低优先级下运行，所以只有每当高优先级任务进入就绪状态时，它才得以抢占时间，如t3、t5、t9时刻。
+
+* Task3
+  * 任务3是一个事件驱动的任务，以相对较低的优先级执行，但高于空闲优先级。它大部分时间处于阻塞状态，等待其感兴趣的事件，每当事件发生时，就会从阻塞状态转换到就绪状态。所有FreeRTOS的跨任务通信机制（任务通知、队列、信号量、事件组等）均可用于以这种方式通知事件并解除任务阻塞。
+  * 事件在时间 t3 和 t5 发生，且也在 t9 和 t12 之间的某个时间点发生。在时间 t3 和 t5 发生的事件会被立即处理，因为在这两个时间点，任务 3 是能够运行的最高优先级任务。在时间 t9 和 t12 之间的某个时间发生的事件则会在 t12 时才被处理，因为在那之前，优先级更高的任务 1 和任务 2 仍在执行。只有在时间 t12，任务 1 和任务 2 都处于阻塞状态时，任务 3 才成为最高优先级的就绪状态任务。
+* Task2
+  * 任务2是一个周期性任务，其执行优先级高于任务3的优先级，但低于任务1的优先级。该任务的时间周期意味着任务2希望在时间点t1、t6和t9执行。
+  * 在时间t6时，任务3处于运行状态，但任务2具有更高的相对优先级，因此抢占任务3并立即开始执行。任务2完成其处理过程后，在时间t7重新进入阻塞状态，此时任务3可以重新进入运行状态以完成其处理过程。任务3本身在时间t8进入阻塞状态。
+* Task1
+  * 任务1也是一种事件驱动的任务。它具有所有任务中的最高优先级，因此可以抢占系统中的任何其他任务。
+
+![执行模式强调了假设性应用中的任务优先级分配与预抢占机制。](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251207112008810.png)
+
+<a id="Pic4.12.3-1"></a>
+
+![执行模式突出任务优先级划分与时间片分配，假设在一个两个任务具有相同优先级的虚拟应用中。](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251207112128073.png)
+
+<a id="Pic4.12.3-2"></a>
+
+[图4.12.3-2](#Pic4.12.3-2)中：
+
+* 空闲任务和Task2
+  * 空闲任务和Task 2均为连续处理任务，且两者优先级均为0（最低优先级）。调度器仅在没有更高优先级的任务可运行时，才会分配处理时间给优先级为0的任务，并通过时间片轮转的方式共享分配给优先级为0的任务的时间。每当发生时钟中断时，一个新的时间片开始，如上图所示，在时刻t1、t2、t3、t4、t5、t8、t9、t10和t11处发生时钟中断。
+  * 空闲任务和任务2轮流进入运行状态，这可能导致两者在相同的时间片内部分时间都处于运行状态，例如在t5和t8之间发生。
+* Task1
+  * 任务1的优先级高于空闲优先级。任务1是一个事件驱动的任务，大部分时间处于阻塞状态，等待其感兴趣的事件，每当事件发生时，从阻塞状态转换到就绪状态。
+  * 感兴趣的事件发生在时间t6。在t6时刻，任务1成为最高优先级且能够运行的任务，因此任务1在时间片中间抢占了空闲任务。事件处理在时间t7完成，此时任务1重新进入阻塞状态。
+
+[图4.12.3-2](#Pic4.12.3-2)展示了应用程序编写者创建的任务与空闲任务共享处理时间。如果应用程序编写者创建的空闲优先级任务有工作要做，而空闲任务没有工作时，将如此多的处理时间分配给空闲任务可能并不理想。如果存在这样的情况，可以通过使用`configIDLE_SHOULD_YIELD`编译时配置常量来改变空闲任务的调度方式：
+
+* 如果将 `configIDLE_SHOULD_YIELD `设置为 0，则空闲任务在其时间片的整个时间内保持在运行状态，除非被优先级更高的任务抢占。
+* 如果 `configIDLE_SHOULD_YIELD` 被设置为 1，则空闲任务在每次循环迭代时，如果存在其他处于就绪状态的空闲优先级任务，就会自愿放弃其剩余分配的时间片。
+
+在[图4.12.3-2](#Pic4.12.3-2)中展示的执行模式，是在将configIDLE_SHOULD_YIELD设置为0的情况下所观察到的现象。而在[图4.12.3-3](#Pic4.12.3-3)中展示的执行模式，则是在相同的场景下，将configIDLE_SHOULD_YIELD设置为1时所观察到的现象。
+
+[图4.12.3-3](#Pic4.12.3-3)还表明，当配置项configIDLE_SHOULD_YIELD设置为1时，空闲任务释放CPU控制权后，后续被选中进入运行状态的任务不会执行一个完整的时片，而是执行空闲任务释放CPU控制权的那个时片中剩余的时间。
+
+![如图4.12.3-2所示相同场景的执行模式，但此次将configIDLE_SHOULD_YIELD设置为1](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251208012456426.png)
+
+<a id="Pic4.12.3-3"></a>
+
+### 优先级抢占调度算法不采用时间片轮转
+
+
+
 [^1]: 第4.13节描述了调度算法。
-[^2]:  这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
+[^2]: 这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
 [^3]: 这是一个简化处理，因为heap_4用于存储堆区内部块大小的信息，因此两个分裂后的块实际总和将少于200字节。
 [^4]: 截图显示，在执行下一个任务之前，每个任务恰好打印一次其消息。这是使用FreeRTOS Windows模拟器产生的仿真场景。Windows模拟器并非真正实时。此外，向Windows控制台写入需要相对较长的时间，并导致一系列Windows系统调用。在具有快速且非阻塞打印功能的真实嵌入式目标上执行相同代码，可能导致在切换到其他任务运行之前，每个任务多次打印其字符串。
 [^5]: 值得注意的是，时间片结束并不是调度器选择新任务运行的唯一地点。正如我们将在本书中展示的那样，当当前执行的任务进入阻塞状态后，调度器也会立即选择一个新任务运行，或者当一个中断将一个更高优先级的任务移动到就绪状态时。
+[^6]: 即使在使用FreeRTOS的特殊低功耗特性时，情况也是如此，在这种情况下，运行FreeRTOS的微控制器将进入低功耗模式，如果应用程序创建的任务都无法执行。
