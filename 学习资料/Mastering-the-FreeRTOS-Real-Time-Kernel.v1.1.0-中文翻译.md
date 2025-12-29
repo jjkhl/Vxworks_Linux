@@ -2200,6 +2200,251 @@ void vTaskSetThreadLocalStoragePointer( TaskHandle_t xTaskToSet, BaseType_t xInd
 
 本章节仅涵盖任务间通信。第7章将涵盖任务到中断和从中断到任务的通信。
 
+## 队列特征
+
+### 数据存储
+
+队列可容纳有限数量、固定大小的数据项[^8]。队列所能容纳的最大项数称为其"长度"。队列的长度以及每个数据项的大小在队列创建时设定。
+
+队列通常用作先进先出（FIFO）缓冲区，其中数据被写入队列的末尾（尾部）并从队列的开头（头部）移除。[图5.2.1-1](#Pic5.2.1-1)展示了作为FIFO使用的队列中数据被写入和读出的过程。同样，也有可能向队列的前端写入数据，并覆盖已处于队列前端的数据。
+
+![一个对队列进行写入和读取操作的示例序列](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251219000147284.png)
+
+<a id="Pic5.2.1-1"></a>
+
+存在两种实现队列行为的方式：
+
+1. 队列复制：按副本排队是指发送到队列的数据会被逐字节复制到队列中。
+1. 队列引用：引用排队意味着队列仅存储指向发送到队列的数据的指针，而不是数据本身。
+
+FreeRTOS采用复制队列的方法，原因在于相较于引用队列的方法，它在功能上更为强大且使用更为简便，具体理由如下：
+
+* 复制排队并不能阻止队列同时用于引用排队。例如，当待排队数据的大小使得将其复制到队列中变得不切实际时，可以将数据的指针复制到队列中代替数据本身。
+* 一个栈变量可以直接被发送到队列中，尽管该变量在声明它的函数退出后将不再存在。
+* 数据可以不经预先分配缓冲区来存储数据而直接发送至队列。之后，您需将数据复制至分配的缓冲区，并对缓冲区的引用进行队列化。
+* 发送任务可以立即重新使用被发送到队列中的变量或缓冲区。
+* 发送任务与接收任务是完全解耦的；应用程序设计者无需关心哪个任务“拥有”数据，或哪个任务负责释放数据。
+* 实时操作系统（RTOS）全权负责分配用于存储数据的内存。
+* 在受保护内存的系统中，对RAM的访问受到限制，因此，通过引用进行队列操作仅能在发送和接收任务都能访问引用数据的情况下实现。而通过复制进行队列操作则允许数据跨越内存保护边界进行传递。
+
+### 多任务接入
+
+队列是具有自身属性的独立对象，任何知晓其存在的任务或中断服务程序（ISR）均可访问。任意数量的任务可向同一队列写入，任意数量的任务可从同一队列读取。实践中，队列存在多个写入者是极为常见的，而队列存在多个读取者则相对少见得多。
+
+### 队列读取阻塞
+
+ 当任务尝试从队列中读取数据时，它可以选择指定一个“阻塞”时间。这是任务保持在阻塞状态以等待数据从队列中变为可用的时间，如果队列已为空，则处于阻塞状态的任务等待数据从队列变为可用，当另一个任务或中断将数据放入队列时，该任务将自动移至就绪状态。如果在数据变为可用之前指定的阻止时间到期，则任务也将自动从阻止状态移动到就绪状态。
+
+队列可以有多个读取器，因此单个队列中可能有多个等待数据的阻塞任务。在这种情况下，当数据可用时，只有一个任务被解除阻塞。解除阻塞的任务始终是等待数据的最高优先级任务。如果两个或多个阻塞任务具有相同的优先级，则未阻塞的任务是等待时间最长的任务。
+
+### 队列写入阻塞
+
+就像从队列中读取一样，任务可以在写入队列时指定阻塞时间。在这种情况下，阻塞时间是任务将保持在阻塞状态的最长时间，以等待队列中的空间变得可用（如果队列已满）。
+
+队列可以有多个写入器，因此一个已满的队列可能有多个任务被阻塞，等待完成发送操作。在这种情况下，当队列上的空间可用时，只有一项任务会被解除阻塞。被解除阻塞的任务始终是等待空间的最高优先级任务。如果两个或多个阻塞任务具有相同的优先级，则解除阻塞的任务是等待时间最长的任务。
+
+### 阻塞多个队列
+
+队列可以分组为集合，允许任务进入阻塞状态以等待集合中任何队列上的数据可用。第 5.6 节，从多个队列接收，演示了队列集。
+
+### 创建队列：静态分配和动态分配的队列
+
+队列由句柄引用，句柄是 QueueHandle_t 类型的变量。队列在使用之前必须显式创建。
+
+有两个 API 函数创建队列：xQueueCreate()、xQueueCreateStatic()。
+
+每个队列需要两个 RAM 块，第一个用于保存其数据结构，第二个用于保存排队数据。 xQueueCreate() 从堆中（动态）分配所需的 RAM。 xQueueCreateStatic() 使用预先分配的 RAM 作为参数传递给函数。
+
+## 使用队列
+
+### xQueueCreate() API 函数
+
+下面显示了 xQueueCreate() 函数原型。 xQueueCreateStatic() 有两个附加参数，分别指向预先分配的用于保存队列数据结构和数据存储区域的内存。
+
+*==xQueueCreate的API函数==*
+
+```c++
+QueueHandle_t xQueueCreate(UBaseType_t uxQueueLength, UBaseType_t uxItemSize);
+```
+
+xQueueCreate的入参和出参：
+
+* uxQueueLength：正在创建的队列在任一时间可以容纳的最大项目数。
+* uxItemSize：可存储在队列中的每个数据项的大小（以字节为单位）。
+* 出参：
+  * 如果返回 NULL，则无法创建队列，因为 FreeRTOS 没有足够的堆内存来分配队列数据结构和存储区域。第 2 章提供有关 FreeRTOS 堆的更多信息。
+  * 如果返回非 NULL 值，则队列创建成功，返回值是已创建队列的句柄。
+
+xQueueReset() 是一个 API 函数，用于将先前创建的队列恢复到其原始的空状态。
+
+### xQueueSendToBack() 和 xQueueSendToFront() API 函数
+
+正如所料，xQueueSendToBack() 将数据发送到队列的后端（尾部），xQueueSendToFront() 将数据发送到队列的前端（头部）。
+
+xQueueSend() 与 xQueueSendToBack() 等效且完全相同。
+
+> 注意：切勿从中断服务例程中调用 xQueueSendToFront() 或 xQueueSendToBack()。应使用中断安全版本 xQueueSendToFrontFromISR() 和 xQueueSendToBackFromISR() 代替它们。这些内容将在第 7 章中进行描述。
+
+```c++
+BaseType_t xQueueSendToFront(QueueHandle_t xQueue, const void* pvItemToQueue, TickType_t xTicksToWait);
+BaseType_t xQueueSendToBack(QueueHandle_t xQueue, const void* pvItemToQueue, TickType_t xTicksToWait);
+```
+
+xQueueSenToFront和xQueueSendToBack的入参和出参：
+
+* xQueue：数据发送（写入）到的队列的句柄。队列句柄将从调用用于创建队列的 xQueueCreate() 或 xQueueCreateStatic() 返回
+* pvItemToQueue：指向要复制到队列中的数据的指针。队列可以容纳的每个项目的大小是在创建队列时设置的，以便将许多字节从 pvItemToQueue 复制到队列存储区域中。
+* xTicksToWait:
+  * 如果队列已满，任务应保持在阻塞状态以等待队列上的空间变得可用的最长时间。
+  * 如果 xTicksToWait 为零且队列已满，则 xQueueSendToFront() 和 xQueueSendToBack() 都将立即返回。
+  * 区块时间以滴答周期为单位指定，因此它表示的绝对时间取决于滴答频率。宏 pdMS_TO_TICKS() 可用于将以毫秒为单位的时间转换为以刻度为单位的时间。
+  * 如果 FreeRTOSConfig.h 中的 INCLUDE_vTaskSuspend 设置为 1，则将 xTicksToWait 设置为 portMAX_DELAY 将导致任务无限期等待（不会超时）。
+* 两种返回值：
+  * pdPASS：当数据成功发送到队列时返回 pdPASS。如果指定了阻塞时间（xTicksToWait 不为零），则调用任务有可能在函数返回之前被置于阻塞状态以等待队列中的空间变得可用，但在阻塞时间到期之前数据已成功写入队列。
+  * errQUEUE_FULL（与 pdFAIL 相同的值）：如果由于队列已满而无法将数据写入队列，则返回 errQUEUE_FULL。如果指定了阻塞时间（xTicksToWait 不为零），则调用任务将被置于阻塞状态，以等待另一个任务或中断在队列中腾出空间，但指定的阻塞时间在此之前已过期。
+
+### xQueueReceive() API函数
+
+xQueueReceive() 从队列接收（读取）一个项目。收到的项目将从队列中删除。
+
+> 注意：切勿从中断服务例程中调用 xQueueReceive()。第 7 章介绍了中断安全的 xQueueReceiveFromISR() API 函数。
+
+```cpp
+BaseType_t xQueueReceive(QueueHandle_t xQueue, void * const pvBuffer, TickType_t xTicksToWait);
+```
+
+xQueueReceive的入参和出参：
+
+* xQueue：从中接收（读取）数据的队列的句柄。队列句柄将从调用用于创建队列的 xQueueCreate() 或 xQueueCreateStatic() 返回。
+* pvBuffer：指向将接收到的数据复制到的内存的指针。队列保存的每个数据项的大小是在创建队列时设置的。 pvBuffer 指向的内存必须至少足够大以容纳那么多字节。
+* xTicksToWait：如果队列已为空，则任务应保持在阻塞状态以等待队列上的数据可用的最长时间。
+  * 如果 xTicksToWait 为零，并且队列已为空，则 xQueueReceive() 将立即返回。区块时间以滴答周期为单位指定，因此它表示的绝对时间取决于滴答频率。宏 pdMS_TO_TICKS() 可用于将以毫秒为单位的时间转换为以刻度为单位的时间。
+  * 如果 FreeRTOSConfig.h 中的 INCLUDE_vTaskSuspend 设置为 1，则将 xTicksToWait 设置为 portMAX_DELAY 将导致任务无限期等待（不会超时）。
+* 出参
+  * pdPASS：当从队列中成功读取数据时，返回 pdPASS。如果指定了阻塞时间（xTicksToWait 不为零），则调用任务可能被置于阻塞状态以等待队列上的数据可用，但在阻塞时间到期之前已成功从队列中读取数据。
+  * errQUEUE_FULL（与 pdFAIL 相同的值）：如果由于队列已满而无法将数据写入队列，则返回 errQUEUE_FULL。如果指定了阻塞时间（xTicksToWait 不为零），则调用任务将被置于阻塞状态，以等待另一个任务或中断在队列中腾出空间，但指定的阻塞时间在此之前已过期。
+
+### uxQueueMessagesWaiting() API函数
+
+uxQueueMessagesWaiting() 查询当前队列中的项目数。
+
+> 注意：切勿从中断服务例程中调用 uxQueueMessagesWaiting()。应使用中断安全的 uxQueueMessagesWaitingFromISR() 来代替它
+
+```cpp
+UBaseType_t uxQueueMessageWaiting(QueueHandle_t xQueue);
+```
+
+uxQueueMessageWaiting的入参和出参:
+
+* xQueue：正在查询的队列的句柄。队列句柄将从调用用于创建队列的 xQueueCreate() 或 xQueueCreateStatic() 返回。
+* 出参：当前正在查询的队列中的项目数。如果返回零，则队列为空。
+
+### 示例：从队列接收时阻塞
+
+此示例演示创建队列、从多个任务向队列发送数据以及从队列接收数据。创建队列是为了保存 int32_t 类型的数据项。发送到队列的任务不指定阻塞时间，而从队列接收的任务则指定。
+
+发送到队列的任务的优先级低于从队列接收的任务。这意味着队列不应该包含多个项目，因为一旦数据发送到队列，接收任务就会解除阻塞，抢占发送任务（因为它具有更高的优先级），并删除数据，使队列再次为空。
+
+该示例创建了如下所示任务的两个实例，一个将值 100 连续写入队列，另一个将值 200 连续写入同一队列。任务参数用于将这些值传递到每个任务实例中。
+
+```cpp
+
+/* 声明一个 QueueHandle_t 类型的变量。它用于存储所有三个任务访问的队列的句柄。 */
+QueueHandle_t xQueue;
+
+static void vSenderTask( void *pvParameters )
+{
+ int32_t lValueToSend;
+ BaseType_t xStatus;
+ /* 创建此任务的两个实例，以便发送到队列的值通过任务参数传入 - 这样每个实例可以使用不同的值。创建队列是为了保存 int32_t 类型的值，因此将参数转换为所需的类型。 */
+ lValueToSend = ( int32_t ) pvParameters;
+ /* 与大多数任务一样，此任务是在无限循环内实现的。 */
+ for( ;; )
+ {
+ /* 将值发送到队列。
+ 第一个参数是数据发送到的队列。队列是在调度程序启动之前创建的，因此是在该任务开始执行之前创建的。
+ 第二个参数是要发送的数据的地址，本例中是lValueToSend的地址
+ 第三个参数是阻塞时间——如果队列已满，任务应保持在阻塞状态以等待队列上的空间变得可用的时间。在这种情况下，未指定阻塞时间，因为队列不应包含超过一项，因此永远不会满。
+ */
+ xStatus = xQueueSendToBack( xQueue, &lValueToSend, 0 );
+ if( xStatus != pdPASS )
+ {
+ /* 由于队列已满，发送操作无法完成，这一定是一个错误，因为队列不应包含超过一项的项目！ */
+ vPrintString( "Could not send to the queue.\r\n" );
+ }
+ }
+}
+/*
+从队列接收数据的任务的实现。接收任务指定阻塞时间为100毫秒，然后进入Blocked状态等待数据可用。当队列上有数据可用，或者 100 毫秒后没有数据可用时，它就会离开阻塞状态。在此示例中，有两个任务连续写入队列，因此 100 毫秒超时永远不会过期。
+*/
+static void vReceiverTask( void *pvParameters )
+{
+ /* 声明将保存从队列接收的值的变量。 */
+ int32_t lReceivedValue;
+ BaseType_t xStatus;
+ const TickType_t xTicksToWait = pdMS_TO_TICKS( 100 );
+ /* 该任务也是在无限循环内定义的。 */
+ for( ;; )
+ {
+ /* 此调用应该始终发现队列为空，因为此任务将立即删除写入队列的任何数据。 */
+ if( uxQueueMessagesWaiting( xQueue ) != 0 )
+ {
+ vPrintString( "Queue should have been empty!\r\n" );
+ }
+ /* 从队列接收数据。
+第一个参数是要从中接收数据的队列。
+该队列是在调度程序启动之前创建的，因此也是在该任务第一次运行之前创建的
+第二个参数是将接收到的数据放入的缓冲区。在这种情况下，缓冲区只是一个变量的地址，该变量具有保存接收到的数据所需的大小。
+最后一个参数是阻塞时间——如果队列已经为空，任务将保持在阻塞状态以等待数据可用的最长时间。 */
+ xStatus = xQueueReceive( xQueue, &lReceivedValue, xTicksToWait );
+ if( xStatus == pdPASS )
+ {
+ /* 成功从队列接收到数据，打印出接收到的值。 */
+ vPrintStringAndNumber( "Received = ", lReceivedValue );
+ }
+ else
+ {
+ /* 即使等待 100ms 也没有从队列中收到数据。这一定是一个错误，因为发送任务是自由运行的并且将不断写入队列。 */
+ vPrintString( "Could not receive from the queue.\r\n" );
+ }
+ }
+}
+/*
+main() 函数的定义。这只是在启动调度程序之前创建队列和三个任务。创建的队列最多可容纳 5 个 int32_t 值，即使相对任务优先级意味着队列永远不会一次容纳超过一项。
+*/
+int main( void )
+{
+ /* 创建的队列最多可容纳 5 个值，每个值都足够大以容纳 int32_t 类型的变量。
+
+ */
+ xQueue = xQueueCreate( 5, sizeof( int32_t ) );
+ if( xQueue != NULL )
+ {
+ /* 创建将发送到队列的任务的两个实例。 task参数用于传递任务将写入队列的值，因此一个任务将连续向队列写入100，而另一个任务将连续向队列写入200。这两个任务均以优先级 1 创建。 */
+ xTaskCreate( vSenderTask, "Sender1", 1000, ( void * ) 100, 1, NULL );
+ xTaskCreate( vSenderTask, "Sender2", 1000, ( void * ) 200, 1, NULL ); 
+ /* 创建将从队列中读取的任务。该任务以优先级 2 创建，因此高于发送者任务的优先级。 */
+ xTaskCreate( vReceiverTask, "Receiver", 1000, NULL, 2, NULL );
+ /* 启动调度程序，以便创建的任务开始执行。 */
+ vTaskStartScheduler();
+ }
+ else
+ {
+ /* The queue could not be created. */
+ }
+ /* 如果一切顺利，那么 main() 将永远不会到达这里，因为调度程序现在将运行任务。如果 main() 确实到达此处，则可能没有足够的 FreeRTOS 堆内存可用于创建空闲任务。第 3 章提供了有关堆内存管理的更多信息。 */
+ for( ;; );
+}
+```
+
+运行结果如下
+
+![示例：从队列接收时阻塞结果](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251230013914917.png)
+
+执行的顺序如下：
+
+![示例：从队列接收时阻塞执行顺序](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251230014001115.png)
+
 
 [^1]: 第4.13节描述了调度算法。
 [^2]: 这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
@@ -2208,3 +2453,4 @@ void vTaskSetThreadLocalStoragePointer( TaskHandle_t xTaskToSet, BaseType_t xInd
 [^5]: 值得注意的是，时间片结束并不是调度器选择新任务运行的唯一地点。正如我们将在本书中展示的那样，当当前执行的任务进入阻塞状态后，调度器也会立即选择一个新任务运行，或者当一个中断将一个更高优先级的任务移动到就绪状态时。
 [^6]: 即使在使用FreeRTOS的特殊低功耗特性时，情况也是如此，在这种情况下，运行FreeRTOS的微控制器将进入低功耗模式，如果应用程序创建的任务都无法执行。
 [^7]: 本书后文将介绍在任务之间安全共享资源的方法。FreeRTOS本身提供的资源，如队列和信号量，总是可以在任务之间安全共享。
+[^8]: FreeRTOS消息缓冲，如在待定章节中所述，提供了一种比持有可变长度消息的队列更轻量级的替代方案。
