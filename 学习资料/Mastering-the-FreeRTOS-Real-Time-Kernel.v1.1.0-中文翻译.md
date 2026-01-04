@@ -1801,81 +1801,81 @@ uxTaskPriorityGet入参和返回值：
 每个任务都可以通过使用NULL代替有效的任务句柄来查询和设置自身的优先级。任务句柄仅在任务需要引用除自身以外的其他任务时才需要，例如当任务1更改任务2的优先级时。为了允许任务1执行此操作，在创建任务2时获取并保存任务2的句柄，如下注释所示。
 
 ```cpp
-void vTask1( void * pvParameters )
+void vTask1(void *pvParameters)
 {
- UBaseType_t uxPriority;
- /*
-此任务总是在任务 2 之前运行，因为它是在更高的优先级下创建的。 neither Task 1 或 Task 2 永远不会阻塞，因此它们总是处于运行或就绪状态。
- */
- /*
-查询此任务运行的优先级 - 传递 NULL 表示 
-"返回调用任务的优先级"。
- */
- uxPriority = uxTaskPriorityGet( NULL );
- for( ;; )
- {
- /* Print out the name of this task. */
- vPrintLine( "Task 1 is running" );
- /*
-将任务 2 的优先级设置为任务 1 优先级之上将导致任务 2 立即开始运行（因为此时任务 2 的优先级高于两个创建的任务中的较高优先级）。
-请注意在调用 vTaskPrioritySet() 时使用的任务 2 句柄 (xTask2Handle)。
- */
- vPrintLine( "About to raise the Task 2 priority" );
- vTaskPrioritySet( xTask2Handle, ( uxPriority + 1 ) );
- /*
-任务1仅当其优先级高于任务2时才会运行。 
-因此，为了使此任务达到此点，任务2必须已经执行完毕并将其优先级降低到此任务的优先级以下。
- */
- }
+    UBaseType_t uxPriority;
+    /*
+   此任务总是在任务 2 之前运行，因为它是在更高的优先级下创建的。 neither Task 1 或 Task 2 永远不会阻塞，因此它们总是处于运行或就绪状态。
+    */
+    /*
+   查询此任务运行的优先级 - 传递 NULL 表示
+   "返回调用任务的优先级"。
+    */
+    uxPriority = uxTaskPriorityGet(NULL);
+    for (;;)
+    {
+        /* Print out the name of this task. */
+        vPrintLine("Task 1 is running");
+        /*
+       将任务 2 的优先级设置为任务 1 优先级之上将导致任务 2 立即开始运行（因为此时任务 2 的优先级高于两个创建的任务中的较高优先级）。
+       请注意在调用 vTaskPrioritySet() 时使用的任务 2 句柄 (xTask2Handle)。
+        */
+        vPrintLine("About to raise the Task 2 priority");
+        vTaskPrioritySet(xTask2Handle, (uxPriority + 1));
+        /*
+       任务1仅当其优先级高于任务2时才会运行。
+       因此，为了使此任务达到此点，任务2必须已经执行完毕并将其优先级降低到此任务的优先级以下。
+        */
+    }
 }
 
-void vTask2( void * pvParameters )
+void vTask2(void *pvParameters)
 {
- UBaseType_t uxPriority;
- /*
-任务1将始终在当前任务之前执行，因为任务1是以更高的优先级创建的。任务1和任务2均不会发生阻塞，因此它们始终处于运行状态或就绪状态。
- *
-查询该任务运行的优先级 - 传入NULL表示“返回调用任务的优先级”
- */
- uxPriority = uxTaskPriorityGet( NULL );
- for( ;; )
- {
- /*
-为使此项任务达到当前状态，任务1必须已运行，并已将此任务（的优先级）设高于其自身。
- */
- /* Print out the name of this task. */
- vPrintLine( "Task 2 is running" );
- /*
- * 将此任务优先级恢复至其原始值。
-   将任务句柄传递为NULL表示“更改调用任务的优先级”。将优先级设置为低于任务1的优先级将导致任务1立即重新开始运行——抢占此任务。
- */
- vPrintLine( "About to lower the Task 2 priority" );
- vTaskPrioritySet( NULL, ( uxPriority - 2 ) );
- }
+    UBaseType_t uxPriority;
+    /*
+   任务1将始终在当前任务之前执行，因为任务1是以更高的优先级创建的。任务1和任务2均不会发生阻塞，因此它们始终处于运行状态或就绪状态。
+    *
+   查询该任务运行的优先级 - 传入NULL表示“返回调用任务的优先级”
+    */
+    uxPriority = uxTaskPriorityGet(NULL);
+    for (;;)
+    {
+        /*
+       为使此项任务达到当前状态，任务1必须已运行，并已将此任务（的优先级）设高于其自身。
+        */
+        /* Print out the name of this task. */
+        vPrintLine("Task 2 is running");
+        /*
+        * 将此任务优先级恢复至其原始值。
+          将任务句柄传递为NULL表示“更改调用任务的优先级”。将优先级设置为低于任务1的优先级将导致任务1立即重新开始运行——抢占此任务。
+        */
+        vPrintLine("About to lower the Task 2 priority");
+        vTaskPrioritySet(NULL, (uxPriority - 2));
+    }
 }
 
 /* 声明一个用于存储任务2句柄的变量。*/
 TaskHandle_t xTask2Handle = NULL;
-int main( void )
+int main(void)
 {
- /* 
- 创建优先级为2的第一个任务。任务参数未使用，设置为NULL。任务句柄也未使用，同样设置为NULL。
- */
- xTaskCreate( vTask1, "Task 1", 1000, NULL, 2, NULL );
- /* The task is created at priority 2 ______^. */
- /*
-创建第二个任务，优先级为1 - 这个优先级低于为任务1分配的优先级。这次，任务参数并未使用，因此设置为NULL。然而，这次需要任务句柄，因此将xTask2Handle的地址作为最后一个参数传递进来。
- */
- xTaskCreate( vTask2, "Task 2", 1000, NULL, 1, &xTask2Handle );
- /* The task handle is the last parameter _____^^^^^^^^^^^^^ */
- /* 启动调度器以使任务开始执行。 */
- vTaskStartScheduler();
- /*
-如果一切顺利，main() 函数将不会到达此处，因为调度器现在将运行已创建的任务。如果main()函数确实到达此处，则说明堆内存不足以创建空闲任务或计时器任务（本书稍后部分将进行描述）。第二章提供了有关堆内存管理的更多信息。
- */
- for( ;; )
- {
- }
+    /*
+    创建优先级为2的第一个任务。任务参数未使用，设置为NULL。任务句柄也未使用，同样设置为NULL。
+    */
+    xTaskCreate(vTask1, "Task 1", 1000, NULL, 2, NULL);
+    /* The task is created at priority 2 ______^. */
+    /*
+   创建第二个任务，优先级为1 - 这个优先级低于为任务1分配的优先级。这次，任务参数并未使用，因此设置为NULL。然而，这次需要任务句柄，因此将xTask2Handle的地址作为最后一个参数传递进来。
+    */
+    xTaskCreate(vTask2, "Task 2", 1000, NULL, 1, &xTask2Handle);
+    /* The task handle is the last parameter _____^^^^^^^^^^^^^ */
+    /* 启动调度器以使任务开始执行。 */
+    vTaskStartScheduler();
+    /*
+   如果一切顺利，main() 函数将不会到达此处，因为调度器现在将运行已创建的任务。如果main()函数确实到达此处，则说明堆内存不足以创建空闲任务或计时器任务（本书稍后部分将进行描述）。第二章提供了有关堆内存管理的更多信息。
+    */
+    for (;;)
+    {
+    }
 }
 
 // 输出
@@ -2352,88 +2352,89 @@ uxQueueMessageWaiting的入参和出参:
 /* 声明一个 QueueHandle_t 类型的变量。它用于存储所有三个任务访问的队列的句柄。 */
 QueueHandle_t xQueue;
 
-static void vSenderTask( void *pvParameters )
+static void vSenderTask(void *pvParameters)
 {
- int32_t lValueToSend;
- BaseType_t xStatus;
- /* 创建此任务的两个实例，以便发送到队列的值通过任务参数传入 - 这样每个实例可以使用不同的值。创建队列是为了保存 int32_t 类型的值，因此将参数转换为所需的类型。 */
- lValueToSend = ( int32_t ) pvParameters;
- /* 与大多数任务一样，此任务是在无限循环内实现的。 */
- for( ;; )
- {
- /* 将值发送到队列。
- 第一个参数是数据发送到的队列。队列是在调度程序启动之前创建的，因此是在该任务开始执行之前创建的。
- 第二个参数是要发送的数据的地址，本例中是lValueToSend的地址
- 第三个参数是阻塞时间——如果队列已满，任务应保持在阻塞状态以等待队列上的空间变得可用的时间。在这种情况下，未指定阻塞时间，因为队列不应包含超过一项，因此永远不会满。
- */
- xStatus = xQueueSendToBack( xQueue, &lValueToSend, 0 );
- if( xStatus != pdPASS )
- {
- /* 由于队列已满，发送操作无法完成，这一定是一个错误，因为队列不应包含超过一项的项目！ */
- vPrintString( "Could not send to the queue.\r\n" );
- }
- }
+    int32_t lValueToSend;
+    BaseType_t xStatus;
+    /* 创建此任务的两个实例，以便发送到队列的值通过任务参数传入 - 这样每个实例可以使用不同的值。创建队列是为了保存 int32_t 类型的值，因此将参数转换为所需的类型。 */
+    lValueToSend = (int32_t)pvParameters;
+    /* 与大多数任务一样，此任务是在无限循环内实现的。 */
+    for (;;)
+    {
+        /* 将值发送到队列。
+        第一个参数是数据发送到的队列。队列是在调度程序启动之前创建的，因此是在该任务开始执行之前创建的。
+        第二个参数是要发送的数据的地址，本例中是lValueToSend的地址
+        第三个参数是阻塞时间——如果队列已满，任务应保持在阻塞状态以等待队列上的空间变得可用的时间。在这种情况下，未指定阻塞时间，因为队列不应包含超过一项，因此永远不会满。
+        */
+        xStatus = xQueueSendToBack(xQueue, &lValueToSend, 0);
+        if (xStatus != pdPASS)
+        {
+            /* 由于队列已满，发送操作无法完成，这一定是一个错误，因为队列不应包含超过一项的项目！ */
+            vPrintString("Could not send to the queue.\r\n");
+        }
+    }
 }
 /*
 从队列接收数据的任务的实现。接收任务指定阻塞时间为100毫秒，然后进入Blocked状态等待数据可用。当队列上有数据可用，或者 100 毫秒后没有数据可用时，它就会离开阻塞状态。在此示例中，有两个任务连续写入队列，因此 100 毫秒超时永远不会过期。
 */
-static void vReceiverTask( void *pvParameters )
+static void vReceiverTask(void *pvParameters)
 {
- /* 声明将保存从队列接收的值的变量。 */
- int32_t lReceivedValue;
- BaseType_t xStatus;
- const TickType_t xTicksToWait = pdMS_TO_TICKS( 100 );
- /* 该任务也是在无限循环内定义的。 */
- for( ;; )
- {
- /* 此调用应该始终发现队列为空，因为此任务将立即删除写入队列的任何数据。 */
- if( uxQueueMessagesWaiting( xQueue ) != 0 )
- {
- vPrintString( "Queue should have been empty!\r\n" );
- }
- /* 从队列接收数据。
-第一个参数是要从中接收数据的队列。
-该队列是在调度程序启动之前创建的，因此也是在该任务第一次运行之前创建的
-第二个参数是将接收到的数据放入的缓冲区。在这种情况下，缓冲区只是一个变量的地址，该变量具有保存接收到的数据所需的大小。
-最后一个参数是阻塞时间——如果队列已经为空，任务将保持在阻塞状态以等待数据可用的最长时间。 */
- xStatus = xQueueReceive( xQueue, &lReceivedValue, xTicksToWait );
- if( xStatus == pdPASS )
- {
- /* 成功从队列接收到数据，打印出接收到的值。 */
- vPrintStringAndNumber( "Received = ", lReceivedValue );
- }
- else
- {
- /* 即使等待 100ms 也没有从队列中收到数据。这一定是一个错误，因为发送任务是自由运行的并且将不断写入队列。 */
- vPrintString( "Could not receive from the queue.\r\n" );
- }
- }
+    /* 声明将保存从队列接收的值的变量。 */
+    int32_t lReceivedValue;
+    BaseType_t xStatus;
+    const TickType_t xTicksToWait = pdMS_TO_TICKS(100);
+    /* 该任务也是在无限循环内定义的。 */
+    for (;;)
+    {
+        /* 此调用应该始终发现队列为空，因为此任务将立即删除写入队列的任何数据。 */
+        if (uxQueueMessagesWaiting(xQueue) != 0)
+        {
+            vPrintString("Queue should have been empty!\r\n");
+        }
+        /* 从队列接收数据。
+       第一个参数是要从中接收数据的队列。
+       该队列是在调度程序启动之前创建的，因此也是在该任务第一次运行之前创建的
+       第二个参数是将接收到的数据放入的缓冲区。在这种情况下，缓冲区只是一个变量的地址，该变量具有保存接收到的数据所需的大小。
+       最后一个参数是阻塞时间——如果队列已经为空，任务将保持在阻塞状态以等待数据可用的最长时间。 */
+        xStatus = xQueueReceive(xQueue, &lReceivedValue, xTicksToWait);
+        if (xStatus == pdPASS)
+        {
+            /* 成功从队列接收到数据，打印出接收到的值。 */
+            vPrintStringAndNumber("Received = ", lReceivedValue);
+        }
+        else
+        {
+            /* 即使等待 100ms 也没有从队列中收到数据。这一定是一个错误，因为发送任务是自由运行的并且将不断写入队列。 */
+            vPrintString("Could not receive from the queue.\r\n");
+        }
+    }
 }
 /*
 main() 函数的定义。这只是在启动调度程序之前创建队列和三个任务。创建的队列最多可容纳 5 个 int32_t 值，即使相对任务优先级意味着队列永远不会一次容纳超过一项。
 */
-int main( void )
+int main(void)
 {
- /* 创建的队列最多可容纳 5 个值，每个值都足够大以容纳 int32_t 类型的变量。
+    /* 创建的队列最多可容纳 5 个值，每个值都足够大以容纳 int32_t 类型的变量。
 
- */
- xQueue = xQueueCreate( 5, sizeof( int32_t ) );
- if( xQueue != NULL )
- {
- /* 创建将发送到队列的任务的两个实例。 task参数用于传递任务将写入队列的值，因此一个任务将连续向队列写入100，而另一个任务将连续向队列写入200。这两个任务均以优先级 1 创建。 */
- xTaskCreate( vSenderTask, "Sender1", 1000, ( void * ) 100, 1, NULL );
- xTaskCreate( vSenderTask, "Sender2", 1000, ( void * ) 200, 1, NULL ); 
- /* 创建将从队列中读取的任务。该任务以优先级 2 创建，因此高于发送者任务的优先级。 */
- xTaskCreate( vReceiverTask, "Receiver", 1000, NULL, 2, NULL );
- /* 启动调度程序，以便创建的任务开始执行。 */
- vTaskStartScheduler();
- }
- else
- {
- /* The queue could not be created. */
- }
- /* 如果一切顺利，那么 main() 将永远不会到达这里，因为调度程序现在将运行任务。如果 main() 确实到达此处，则可能没有足够的 FreeRTOS 堆内存可用于创建空闲任务。第 3 章提供了有关堆内存管理的更多信息。 */
- for( ;; );
+    */
+    xQueue = xQueueCreate(5, sizeof(int32_t));
+    if (xQueue != NULL)
+    {
+        /* 创建将发送到队列的任务的两个实例。 task参数用于传递任务将写入队列的值，因此一个任务将连续向队列写入100，而另一个任务将连续向队列写入200。这两个任务均以优先级 1 创建。 */
+        xTaskCreate(vSenderTask, "Sender1", 1000, (void *)100, 1, NULL);
+        xTaskCreate(vSenderTask, "Sender2", 1000, (void *)200, 1, NULL);
+        /* 创建将从队列中读取的任务。该任务以优先级 2 创建，因此高于发送者任务的优先级。 */
+        xTaskCreate(vReceiverTask, "Receiver", 1000, NULL, 2, NULL);
+        /* 启动调度程序，以便创建的任务开始执行。 */
+        vTaskStartScheduler();
+    }
+    else
+    {
+        /* The queue could not be created. */
+    }
+    /* 如果一切顺利，那么 main() 将永远不会到达这里，因为调度程序现在将运行任务。如果 main() 确实到达此处，则可能没有足够的 FreeRTOS 堆内存可用于创建空闲任务。第 3 章提供了有关堆内存管理的更多信息。 */
+    for (;;)
+        ;
 }
 ```
 
@@ -2445,6 +2446,323 @@ int main( void )
 
 ![示例：从队列接收时阻塞执行顺序](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251230014001115.png)
 
+## 从多个来源接收数据
+
+在 FreeRTOS 设计中，一项任务从多个源接收数据是很常见的。接收任务需要知道数据来自哪里，以确定如何处理它。这是一种易于实现的设计模式，它使用单个队列来传输包含数据值和数据源的结构，如[图5.4-1](#Pic5.4-1)所示。
+
+*==在队列上发送结构的示例场景==*
+
+![在队列上发送结构的示例场景](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20251231000845388.png)
+
+<a id="Pic5.4-1"></a>
+
+如[图5.4-1](#Pic5.4-1)所示：
+
+* 创建的队列包含 Data_t 类型的结构。该结构允许在一条消息中将数据值和指示数据含义的枚举类型发送到队列。
+* 中央控制器任务执行主要系统功能。这必须对队列上传达给它的系统状态的输入和更改做出反应。
+* CAN 总线任务用于封装 CAN 总线接口功能。当 CAN 总线任务接收并解码消息时，它将已解码的消息以 Data_t 结构发送到控制器任务。传输结构的 eDataID 成员告诉控制器任务数据是什么。在这里所示的情况下，它是电机速度值。传输结构的 lDataValue 成员告诉控制器任务实际的电机速度值。
+* 人机界面 (HMI) 任务用于封装所有 HMI 功能。机器操作员可能可以通过多种方式输入命令和查询值，这些方式必须在 HMI 任务中检测和解释。当输入新命令时，HMI任务将命令以Data_t结构发送到控制器任务。传输结构的 eDataID 成员告诉控制器任务数据是什么。在这里所示的情况下，它是一个新的设定点值。传输结构的 lDataValue 成员告诉控制器任务实际的设定点值
+
+第 (RB-TBD) 章展示了如何扩展此设计模式，以便控制器任务可以直接回复对结构进行排队的任务。
+
+### 示例：发送到队列以及发送队列上的结构时阻塞
+
+和示例5.3.5：从队列接收时阻塞时类似，但任务优先级相反，因此接收任务的优先级低于发送任务。此外，创建的队列保存结构而不是整数。
+
+在示例5.3.5中，接收任务具有最高优先级，因此队列永远不会包含多个项目。
+
+发生这种情况是因为一旦数据放入队列，接收任务就会抢占发送任务。
+
+在例5.4.1中，发送任务具有较高的优先级，因此队列通常会满。这是因为，一旦接收任务从队列中删除一个项目，它就会被其中一个发送任务抢占，然后立即重新填充队列。然后，发送任务重新进入阻塞状态，等待队列上再次有可用空间。
+
+```cpp
+/* 定义一个枚举类型，用于标识数据的来源。 */
+typedef enum
+{
+    eSender1,
+    eSender2
+} DataSource_t;
+/* 定义将在队列上传递的结构类型。 */
+typedef struct
+{
+    uint8_t ucValue;
+    DataSource_t eDataSource;
+} Data_t;
+/* 声明将在队列上传递的两个 Data_t 类型的变量。 */
+static const Data_t xStructsToSend[2] =
+    {
+        {100, eSender1}, /* Used by Sender1. */
+        {200, eSender2}  /* Used by Sender2. */
+};
+
+/*
+下面显示了发送任务的实现。发送任务指定的阻塞时间为100毫秒，因此每当队列满时，它就会进入Blocked状态，等待空间变得可用。当队列上有可用空间或 100 毫秒后没有空间可用时，它将离开阻塞状态。在此示例中，接收任务不断在队列中腾出空间，因此 100 毫秒的超时永远不会过期。
+*/
+static void vSenderTask(void *pvParameters)
+{
+    BaseType_t xStatus;
+    const TickType_t xTicksToWait = pdMS_TO_TICKS(100);
+    /* 与大多数任务一样，此任务是在无限循环内实现的。. */
+    for (;;)
+    {
+        /* 发送到队列。
+       第二个参数是正在发送的结构的地址。地址作为任务参数传入，所以直接使用pvParameters
+       第三个参数是阻塞时间——如果队列已满，任务应保持在阻塞状态以等待队列上的空间变得可用的时间。指定阻塞时间是因为发送任务的优先级高于接收任务，因此队列预计会变满。当两个发送任务都处于阻塞状态时，接收任务将从队列中删除项目。*/
+        xStatus = xQueueSendToBack(xQueue, pvParameters, xTicksToWait);
+        if (xStatus != pdPASS)
+        {
+            /* 即使等待 100 毫秒，发送操作也无法完成。这一定是一个错误，因为一旦两个发送任务都处于阻塞状态，接收任务就应该在队列中腾出空间。 */
+            vPrintString("Could not send to the queue.\r\n");
+        }
+    }
+}
+
+/*
+接收任务的优先级最低，因此仅当两个发送任务都处于阻塞状态时才运行。
+发送任务只有在队列已满时才会进入阻塞状态，因此接收任务只有在队列已满时才会执行。因此，即使它没有指定块时间，它也总是期望接收数据。
+*/
+static void vReceiverTask(void *pvParameters)
+{
+    /* Declare the structure that will hold the values received from the
+    queue. */
+    Data_t xReceivedStructure;
+    BaseType_t xStatus;
+    /* 该任务也是在无限循环内定义的。 */
+    for (;;)
+    {
+        /* 由于该任务具有最低优先级，因此仅当发送任务处于阻塞状态时才会运行。仅当队列已满时，发送任务才会进入阻塞状态，因此该任务始终期望队列中的项目数等于队列长度，在本例中为 3。 */
+        if (uxQueueMessagesWaiting(xQueue) != 3)
+        {
+            vPrintString("Queue should have been full!\r\n");
+        }
+        /* 从队列中接收
+        第二个参数是将接收到的数据放入的缓冲区。在这种情况下，缓冲区只是一个变量的地址，该变量具有保存接收到的结构所需的大小。
+        最后一个参数是阻塞时间——如果队列已经为空，任务将保持在阻塞状态以等待数据可用的最长时间。在这种情况下，不需要阻塞时间，因为该任务仅在队列已满时才会运行。*/
+        xStatus = xQueueReceive(xQueue, &xReceivedStructure, 0);
+        if (xStatus == pdPASS)
+        {
+            /* 成功从队列接收到数据，打印出接收到的值以及该值的来源。 */
+            if (xReceivedStructure.eDataSource == eSender1)
+            {
+                vPrintStringAndNumber("From Sender 1 = ",
+                                      xReceivedStructure.ucValue);
+            }
+            else
+            {
+                vPrintStringAndNumber("From Sender 2 = ",
+                                      xReceivedStructure.ucValue);
+            }
+        }
+        else
+        {
+            /* 队列中没有收到任何内容。这一定是一个错误，因为此任务只能在队列已满时运行。 */
+            vPrintString("Could not receive from the queue.\r\n");
+        }
+    }
+}
+
+// main() 与前面的示例相比仅略有变化。创建队列来保存三个Data_t结构，发送和接收任务的优先级是相反的。
+int main(void)
+{
+    /* 创建队列最多可容纳 3 个 Data_t 类型的结构。 */
+    xQueue = xQueueCreate(3, sizeof(Data_t));
+    if (xQueue != NULL)
+    {
+        /* 创建将写入队列的任务的两个实例。该参数用于传递任务将写入队列的结构体。
+        因此一个任务将连续发送 xStructsToSend[ 0 ] 到队列，而另一个任务将连续发送 xStructsToSend[ 1 ]。
+        这两个任务都是以优先级 2 创建的，该优先级高于接收者的优先级。 */
+        xTaskCreate(vSenderTask, "Sender1", 1000, &(xStructsToSend[0]),
+                    2, NULL);
+        xTaskCreate(vSenderTask, "Sender2", 1000, &(xStructsToSend[1]),
+                    2, NULL);
+        /* 创建将从队列中读取的任务。该任务以优先级 1 创建，因此低于发送者任务的优先级 */
+        xTaskCreate(vReceiverTask, "Receiver", 1000, NULL, 1, NULL);
+        /* 启动调度程序，以便创建的任务开始执行。 */
+        vTaskStartScheduler();
+    }
+    else
+    {
+        /* The queue could not be created. */
+    }
+    /* 如果一切顺利，那么 main() 将永远不会到达这里，因为调度程序现在将运行任务。如果 main() 确实到达此处，则可能没有足够的堆内存可用于创建空闲任务。第 3 章提供了有关堆内存管理的更多信息。 */
+    for (;;)
+        ;
+}
+```
+
+![示例5.4.1输出](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260103005046658.png)
+
+![示例5.4.1执行顺序](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260103005120148.png)
+
+时刻解释：
+
+* t1：任务发送者1执行并向队列发送3个数据项
+* t2：队列已满，因此发送方 1 进入阻塞状态以等待其下一次发送完成。任务发送者 2 现在是可以运行的最高优先级任务，因此它进入正在运行状态。
+* t3：任务发送者2发现队列已经满了，因此它进入阻塞状态以等待其第一次发送完成。 Task Receiver 现在是可以运行的最高优先级任务，因此它进入 Running 状态。
+* t4：优先级高于接收任务优先级的两个任务正在等待队列上的可用空间，导致任务接收方在从队列中删除一项后立即被抢占。任务 Sender 1 和 Sender 2 具有相同的优先级，因此调度程序选择等待时间最长的任务作为将进入 Running 状态的任务，在本例中为任务 Sender 1。
+* t5：任务发送者 1 向队列发送另一个数据项。队列中只有一个空间，因此任务 Sender 1 进入阻塞状态以等待其下一次发送完成。任务接收器再次是可以运行的最高优先级任务，因此它进入正在运行状态。任务发送器 1 现在已向队列发送了四个项目，而任务发送器 2 仍在等待将其第一个项目发送到队列。
+* t6：优先级高于接收任务优先级的两个任务正在等待队列上的可用空间，因此任务接收方一旦从队列中删除一项，就会被抢占。这次Sender 2 的等待时间比Sender 1 长，因此Sender 2 进入Running 状态。
+* t7：任务发送者 2 向队列发送一个数据项。队列中只有一个空间，因此发送方 2 进入阻塞状态以等待其下一次发送完成。任务 Sender 1 和 Sender 2 都在等待队列上的可用空间，因此任务 Receiver 是唯一可以进入 Running 状态的任务。
+
+## 处理大型或可变大小数据
+
+### 排队指针
+
+如果队列中存储的数据大小很大，那么最好使用队列传输指向数据的指针，而不是将数据本身逐字节复制到队列中或从队列中复制出来。传输指针在处理时间和创建队列所需的 RAM 量方面都更加高效。然而，在对指针进行排队时，必须格外小心以确保：
+
+* 所指向的 RAM 的所有者是明确定义的：当通过指针在任务之间共享内存时，必须确保两个任务不会同时修改内存内容，或采取任何其他可能导致内存内容无效或不一致的操作。理想情况下，在将指针发送到队列之前，只允许发送任务访问内存，并且在从队列接收到指针后，只允许接收任务访问内存。
+* 所指向的 RAM 仍然有效：如果所指向的内存是动态分配的，或者是从预分配缓冲区池中获取的，那么只有一个任务应该负责释放内存。释放内存后，任何任务都不应尝试访问该内存。决不应该使用指针来访问已在任务堆栈上分配的数据。栈帧改变后数据将不再有效。
+
+通过示例，下面演示了如何使用队列将指向缓冲区的指针从一个任务发送到另一个任务：
+
+```cpp
+/* 声明一个 QueueHandle_t 类型的变量来保存正在创建的队列的句柄。 */
+QueueHandle_t xPointerQueue;
+/* 创建一个最多可容纳 5 个指针的队列，在本例中为字符指针。 */
+xPointerQueue = xQueueCreate(5, sizeof(char *));
+
+/* 一个任务获取一个缓冲区，将一个字符串写入缓冲区，然后将缓冲区的地址发送到创建的队列。 */
+void vStringSendingTask(void *pvParameters)
+{
+    char *pcStringToSend;
+    const size_t xMaxStringLength = 50;
+    BaseType_t xStringNumber = 0;
+    for (;;)
+    { /*获取至少为 xMaxStringLength 个字符大的缓冲区。
+        prvGetBuffer() 的实现未显示 - 它可能从预分配缓冲区池中获取缓冲区，或者只是动态分配缓冲区
+      */
+        pcStringToSend = (char *)prvGetBuffer(xMaxStringLength);
+        /* 字符串写入缓冲 */
+        snprintf(pcStringToSend, xMaxStringLength, "String number %d\r\n",
+                 xStringNumber);
+        /* 递增计数器，使字符串在此任务的每次迭代中都不同。 */
+        xStringNumber++;
+        /* 将缓冲区的地址发送到创建的队列。缓冲区的地址存储在 pcStringToSend 变量中。*/
+        xQueueSend(xPointerQueue,   /* 队列的句柄 */
+                   &pcStringToSend, /* 指向缓冲区的指针的地址。 */
+                   portMAX_DELAY);
+    }
+}
+
+/* 从上面创建并写入下面的队列接收缓冲区地址的任务。缓冲区包含一个字符串，该字符串被打印出来。 */
+void vStringReceivingTask(void *pvParameters)
+{
+    char *pcReceivedString;
+    for (;;)
+    {
+        /* 接收缓冲区的地址。 */
+        xQueueReceive(xPointerQueue,     /* 队列的句柄。 */
+                      &pcReceivedString, /* 将缓冲区的地址存储在 pcReceivedString 中。 */
+                      portMAX_DELAY);
+        /* 缓冲区保存一个字符串，将其打印出来。 */
+        vPrintString(pcReceivedString);
+        /* 不再需要缓冲区 - 释放它以便可以释放或重新使用它。 */
+        prvReleaseBuffer(pcReceivedString);
+    }
+}
+```
+
+### 使用队列接收指向缓冲区的指针[^9]
+
+本书前面的章节演示了两种强大的设计模式；将结构发送到队列，并将指针发送到队列。组合这些技术允许任务使用单个队列从任何数据源接收任何数据类型。 FreeRTOS+TCP TCP/IP 堆栈的实现提供了如何实现这一点的实际示例
+
+TCP/IP 堆栈在其自己的任务中运行，必须处理来自许多不同源的事件。不同的事件类型与不同类型和长度的数据相关联。 IPStackEvent_t 结构描述 TCP/IP 任务外部发生的所有事件，并发送到队列上的 TCP/IP 任务。清单 5.16 显示了 IPStackEvent_t 结构。 IPStackEvent_t结构的pvData成员是一个指针，可用于直接保存值，或指向缓冲区。
+
+*==FreeRTOS+TCP中用于发送事件到TCP/IP栈任务的结构体==*
+
+```cpp
+/* TCP/IP 堆栈中用于识别事件的枚举类型的子集。 */
+typedef enum
+{
+    eNetworkDownEvent = 0, /* 网络接口已丢失，或需要（重新）连接。 */
+    eNetworkRxEvent,       /* 已从网络收到数据包。 */
+    eTCPAcceptEvent,       /* 调用 FreeRTOS_accept() 来接受或等待新客户端。 */
+    /*其他事件类型出现在此处，但未在此列表中显示。 */
+} eIPEvent_t;
+/* 描述事件的结构，并通过队列发送到 TCP/IP 任务。 */
+typedef struct IP_TASK_COMMANDS
+{
+    /*标识事件的枚举类型。请参阅上面的 eIPEvent_t 定义。 */
+    eIPEvent_t eEventType;
+    /* 可以保存值或指向缓冲区的通用指针。 */
+    void *pvData;
+} IPStackEvent_t;
+
+/*
+    eNetworkRxEvent:从网络接收到数据包。
+    网络接口使用 IPStackEvent_t 类型的结构将数据接收事件发送到 TCP/IP 任务。
+    该结构的 eEventType 成员设置为 eNetworkRxEvent，该结构的 pvData 成员用于指向包含接收到的数据的缓冲区。
+*/
+
+void vSendRxDataToTheTCPTask(NetworkBufferDescriptor_t *pxRxedData)
+{
+    IPStackEvent_t xEventStruct;
+    /* 完成IPStackEvent_t结构。接收到的数据存储在pxRxedData中。 */
+    xEventStruct.eEventType = eNetworkRxEvent;
+    xEventStruct.pvData = (void *)pxRxedData;
+    /* 将 IPStackEvent_t 结构发送到 TCP/IP 任务。 */
+    xSendEventStructToIPTask(&xEventStruct);
+}
+
+/*
+    eTCPAcceptEvent：套接字用于接受或等待来自客户端的连接。
+    调用 FreeRTOS_accept() 的任务使用 IPStackEvent_t 类型的结构将接受事件发送到 TCP/IP 任务。
+    该结构的 eEventType 成员设置为 eTCPAcceptEvent，该结构的 pvData 成员设置为正在接受连接的套接字的句柄。
+*/
+
+void vSendAcceptRequestToTheTCPTask(Socket_t xSocket)
+{
+    IPStackEvent_t xEventStruct;
+    /* 完成IPStackEvent_t结构。 */
+    xEventStruct.eEventType = eTCPAcceptEvent;
+    xEventStruct.pvData = (void *)xSocket;
+    /* 将 IPStackEvent_t 结构发送到 TCP/IP 任务。 */
+    xSendEventStructToIPTask(&xEventStruct);
+}
+
+/*
+    eNetworkDownEvent：网络需要连接或重新连接。
+    网络接口使用 IPStackEvent_t 类型的结构将网络关闭事件发送到 TCP/IP 任务。
+    该结构的 eEventType 成员设置为 eNetworkDownEvent。网络宕机事件不与任何数据关联，因此不使用该结构的 pvData 成员。
+*/
+
+void vSendNetworkDownEventToTheTCPTask(Socket_t xSocket)
+{
+    IPStackEvent_t xEventStruct;
+    /* 完成IPStackEvent_t结构。 */
+    xEventStruct.eEventType = eNetworkDownEvent;
+    xEventStruct.pvData = NULL; /* 未使用，但为了完整性设置为 NULL。 */
+    /* 将 IPStackEvent_t 结构发送到 TCP/IP 任务。 */
+    xSendEventStructToIPTask(&xEventStruct);
+}
+
+IPStackEvent_t xReceivedEvent;
+/* 阻止网络事件队列，直到接收到事件，或者 xNextIPSleep 滴答过去但未接收到事件。
+   eEventType 设置为 eNoEvent，以防对 xQueueReceive() 的调用因为超时而不是因为收到事件而返回。 */
+xReceivedEvent.eEventType = eNoEvent;
+xQueueReceive(xNetworkEventQueue, &xReceivedEvent, xNextIPSleep);
+/* Which event was received, if any? */
+switch (xReceivedEvent.eEventType)
+{
+case eNetworkDownEvent:
+    /* 尝试（重新）建立连接。此事件不与任何数据关联。 */
+    prvProcessNetworkDownEvent();
+    break;
+case eNetworkRxEvent:
+    /* 网络接口收到新数据包。指向接收到的数据的指针存储在接收到的 IPStackEvent_t 结构的 pvData 成员中。处理接收到的数据。 */
+    prvHandleEthernetPacket((NetworkBufferDescriptor_t *)(xReceivedEvent.pvData));
+    break;
+case eTCPAcceptEvent:
+    /* 调用了 FreeRTOS_accept() API 函数。正在接受连接的套接字的句柄存储在接收到的 IPStackEvent_t 结构的 pvData 成员中。 */
+    xSocket = (FreeRTOS_Socket_t *)(xReceivedEvent.pvData);
+    xTCPCheckNewClient(xSocket);
+    break;
+    /* 其他事件类型的处理方式相同，此处不再展示。 */
+}
+```
+
+
+
 
 [^1]: 第4.13节描述了调度算法。
 [^2]: 这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
@@ -2454,3 +2772,4 @@ int main( void )
 [^6]: 即使在使用FreeRTOS的特殊低功耗特性时，情况也是如此，在这种情况下，运行FreeRTOS的微控制器将进入低功耗模式，如果应用程序创建的任务都无法执行。
 [^7]: 本书后文将介绍在任务之间安全共享资源的方法。FreeRTOS本身提供的资源，如队列和信号量，总是可以在任务之间安全共享。
 [^8]: FreeRTOS消息缓冲，如在待定章节中所述，提供了一种比持有可变长度消息的队列更轻量级的替代方案。
+[^9]: FreeRTOS 消息缓冲区是保存可变长度数据的队列的轻量级替代方案
