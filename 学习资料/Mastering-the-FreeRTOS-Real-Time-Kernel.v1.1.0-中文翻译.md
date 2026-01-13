@@ -2761,7 +2761,256 @@ case eTCPAcceptEvent:
 }
 ```
 
+## 从多个队列接收
 
+### 队列集
+
+应用程序设计通常需要单个任务来接收不同大小的数据、具有不同含义的数据以及来自不同来源的数据。上一节演示了如何使用接收结构的单个队列以简洁有效的方式完成此操作。然而，有时应用程序的设计者会遇到限制其设计选择的约束，因此需要对某些数据源使用单独的队列。例如，集成到设计中的第三方代码可能假设存在专用队列。在这种情况下，可以使用“队列集”
+
+队列集允许任务从多个队列接收数据，而任务无需轮询每个队列来确定哪个队列（如果有）包含数据。
+
+与使用接收结构的单个队列实现相同功能的设计相比，使用队列集从多个源接收数据的设计不太整洁，效率也较低。因此，建议仅在设计限制使得绝对有必要使用队列集时才使用队列集。
+
+以下部分描述了如何使用以下设置的队列：
+
+* 创建一个队列集
+* 添加队列到集合：信号量也可以添加到队列集中。信号量将在本书后面进行描述。
+* 从队列集中读取以确定该集中的哪些队列包含数据。
+
+当作为集合成员的队列接收数据时，接收队列的句柄被发送到队列集合，并在任务调用从队列集合读取的函数时返回。因此，如果从队列集中返回队列句柄，则知道该句柄引用的队列包含数据，然后任务可以直接从该队列读取
+
+> 注意：如果队列是队列集的成员，则每次从队列集接收到其句柄时都必须从队列中读取，并且在从队列集接收到其句柄之前不得从队列中读取。
+
+通过在 FreeRTOSConfig.h 中将 configUSE_QUEUE_SETS 编译时配置常量设置为 1 来启用队列集功能。
+
+### xQueueCreateSet函数
+
+队列集必须在使用之前显式创建。在撰写本文时，尚未实现 xQueueCreateSetStatic()。然而队列集本身就是队列，因此可以通过使用特制的 xQueueCreateStatic() 调用来使用预分配的内存创建队列。
+
+队列集由句柄引用，句柄是 QueueSetHandle_t 类型的变量。 xQueueCreateSet() API 函数创建队列集并返回引用所创建队列集的 QueueSetHandle_t。
+
+```cpp
+QueueSetHandle_t xQueueCreateSet( const UBaseType_t uxEventQueueLength);
+```
+
+xQueueCreateSet的入参和出参：
+
+* uxEventQueueLength
+  * 当作为队列集成员的队列接收数据时，接收队列的句柄被发送到队列集。 uxEventQueueLength 定义正在创建的队列集在任一时间可以容纳的最大队列句柄数。
+  * 仅当集合内的队列接收到数据时，队列句柄才会发送到队列集。如果队列已满，则无法接收数据，因此如果队列集中的所有队列都已满，则无例如，如果集合中有 3 个空队列，并且每个队列的长度为 5，则在集合中的所有队列都已满之前，集合中的队列总共可以接收 15 个项目（三个队列乘以每个队列 5 个项目）。在该示例中，uxEventQueueLength 必须设置为 15，以保证队列集可以接收发送给它的每个项目。法将队列句柄发送到队列集。因此，队列集一次必须保存的最大项目数是该队列中每个队列的长度之和。
+  * 信号量也可以添加到队列集中。本书稍后将介绍信号量。为了计算必要的 uxEventQueueLength，二进制信号量的长度为 1，互斥体的长度为 1，计数信号量的长度由信号量的最大计数值给出。
+  * 作为另一个示例，如果队列集将包含长度为 3 的队列和二进制信号量（长度为 1），则 uxEventQueueLength 必须设置为 4（三加一）。
+* QueueSetHandle_t
+  * 如果返回 NULL，则无法创建队列集，因为 FreeRTOS 没有足够的堆内存来分配队列集数据结构和存储区域。第 3 章提供有关 FreeRTOS 堆的更多信息.
+  * 如果返回非 NULL 值，则队列集创建成功，返回值是已创建队列集的句柄。
+
+### xQueueAddToSet函数
+
+xQueueAddToSet() 将队列或信号量添加到队列集中。信号量将在本书后面进行描述。
+
+```cpp
+BaseType_t xQueueAddToSet(QueueSetMemberHandle_t xQueueOrSemaphore, QueueHandle_t xQueueSet);
+```
+
+xQueueAddToSet入参出参：
+
+* xQueueOrSemaphore
+  * 正在添加到队列集中的队列或信号量的句柄。队列句柄和信号量句柄都可以转换为 QueueSetMemberHandle_t 类型。
+* 返回值：两种可能返回值
+  * pdPASS：队列集创建成功
+  * pdFAIL：队列或信号量不能加入队列集
+* 队列和二进制信号量只有在空时才能添加到集合中。仅当计数信号量为零时，才可以将计数信号量添加到集合中。队列和信号量一次只能是一组的成员。
+
+### xQueueSelectFromSet函数
+
+xQueueSelectFromSet() 从队列集中读取队列句柄。
+
+当作为集合成员的队列或信号量接收数据时，接收队列或信号量的句柄被发送到队列集合，并在任务调用 xQueueSelectFromSet() 时返回。如果从对 xQueueSelectFromSet() 的调用返回句柄，则已知该句柄引用的队列或信号量包含数据，并且调用任务必须直接从队列或信号量读取。
+
+> 注意：不要从属于集合成员的队列或信号量读取数据，除非首先从调用 xQueueSelectFromSet() 返回了队列或信号量的句柄。每次调用 xQueueSelectFromSet() 返回队列句柄或信号量句柄时，仅从队列或信号量中读取一项。
+
+```cpp
+QueueSetMemberHandle_t xQueueSelectFromSet(QueueSetHandle_t xQueueSet, const TickType_t xTicksToWait);
+```
+
+xQueueSelectFromSet入参和出参：
+
+* xQueueSet：从中接收（读取）队列句柄或信号量句柄的队列集的句柄。队列集句柄将从调用用于创建队列集的 xQueueCreateSet() 返回。
+* xTicksToWait
+  * 如果队列集中的所有队列和信号量都为空，则调用任务应保持在阻塞状态以等待从队列集中接收队列或信号量句柄的最长时间。
+  * 如果 xTicksToWait 为零，则当集合中的所有队列和信号量都为空时，xQueueSelectFromSet() 将立即返回。
+  * 区块时间以滴答周期为单位指定，因此它表示的绝对时间取决于滴答频率。宏 pdMS_TO_TICKS() 可用于将以毫秒为单位的时间转换为以刻度为单位的时间
+  * 如果 FreeRTOSConfig.h 中的 INCLUDE_vTaskSuspend 设置为 1，则将 xTicksToWait 设置为 portMAX_DELAY 将导致任务无限期等待（不会超时）。
+* 出参
+  * 非 NULL 的返回值将是已知包含数据的队列或信号量的句柄。如果指定了阻塞时间（xTicksToWait 不为零），则调用任务可能被置于阻塞状态以等待集合中的队列或信号量中的数据变得可用，但在阻塞时间到期之前已成功从队列集中读取句柄。句柄QueueSetMemberHandle_t 类型返回，该类型可以转换为 QueueHandle_t 类型或 SemaphoreHandle_t 类型。
+  * 如果返回值为 NULL，则无法从队列集中读取句柄。如果指定了阻塞时间（xTicksToWait 不为零），则调用任务将置于阻塞状态，以等待另一个任务或中断将数据发送到集合中的队列或信号量，但阻塞时间在此之前已过期。
+
+### 示例: 使用队列集
+
+此示例创建两个发送任务和一个接收任务。发送任务通过两个单独的队列将数据发送到接收任务，每个任务一个队列。将两个队列添加到一个队列集中，接收任务从队列集中读取以确定两个队列中哪一个包含数据。任务、队列和队列集都是在 main() 中创建的。
+
+发送任务写入的队列是同一队列集的成员。每次任务发送到队列之一时，队列的句柄都会发送到队列集。接收任务调用xQueueSelectFromSet()从队列集中读取队列句柄。接收任务从集合中接收到队列句柄后，知道接收到的句柄引用的队列包含数据，因此直接从队列中读取数据。它从队列中读取的数据是一个指向字符串的指针，接收任务将其打印出来。
+
+如果对 xQueueSelectFromSet() 的调用超时，则返回 NULL。在例 5.3 中，xQueueSelectFromSet() 的调用具有无限的阻塞时间，因此它永远不会超时，并且只能返回一个有效的队列句柄。
+
+因此，接收任务在使用返回值之前不需要检查xQueueSelectFromSet()是否返回NULL。
+
+xQueueSelectFromSet() 仅当句柄引用的队列包含数据时才返回队列句柄，因此从队列读取时无需使用阻塞时间。
+
+```cpp
+/* 声明两个 QueueHandle_t 类型的变量。两个队列都添加到同一队列集中。 */
+static QueueHandle_t xQueue1 = NULL, xQueue2 = NULL;
+/* 声明 QueueSetHandle_t 类型的变量。这是两个队列添加到的队列集。 */
+static QueueSetHandle_t xQueueSet = NULL;
+
+/*
+第一个发送任务使用 xQueue1 每 100 毫秒向接收任务发送一个字符指针。
+第二个发送任务使用xQueue2每隔200毫秒向接收任务发送一个字符指针。字符指针指向标识发送任务的字符串。清单 5.25 显示了这两个任务的实现。
+*/
+void vSenderTask1(void *pvParameters)
+{
+    const TickType_t xBlockTime = pdMS_TO_TICKS(100);
+    const char *const pcMessage = "Message from vSenderTask1\r\n";
+    /* As per most tasks, this task is implemented within an infinite loop. */
+    for (;;)
+    {
+        /* Block for 100ms. */
+        vTaskDelay(xBlockTime);
+        /* 将此任务的字符串发送到 xQueue1。即使队列只能容纳一项，也没有必要使用阻塞时间。
+        这是因为从队列中读取的任务的优先级高于本任务的优先级；一旦该任务写入队列，它就会被从队列读取的任务抢占，
+        因此在调用 xQueueSend() 返回时队列将再次为空。出块时间设置为0。 */
+        xQueueSend(xQueue1, &pcMessage, 0);
+    }
+}
+/*-----------------------------------------------------------*/
+void vSenderTask2(void *pvParameters)
+{
+    const TickType_t xBlockTime = pdMS_TO_TICKS(200);
+    const char *const pcMessage = "Message from vSenderTask2\r\n";
+    /* As per most tasks, this task is implemented within an infinite loop. */
+    for (;;)
+    {
+        /* Block for 200ms. */
+        vTaskDelay(xBlockTime);
+        /* 将此任务的字符串发送到 xQueue1。即使队列只能容纳一项，也没有必要使用阻塞时间。
+        这是因为从队列中读取的任务的优先级高于本任务的优先级；一旦该任务写入队列，它就会被从队列读取的任务抢占，
+        因此在调用 xQueueSend() 返回时队列将再次为空。出块时间设置为0。 */
+        xQueueSend(xQueue2, &pcMessage, 0);
+    }
+}
+
+void vReceiverTask(void *pvParameters)
+{
+    QueueHandle_t xQueueThatContainsData;
+    char *pcReceivedString;
+    /* 与大多数任务一样，此任务是在无限循环内实现的。 */
+    for (;;)
+    {
+        /* 阻塞队列集以等待集合中的队列之一包含数据。
+        将从 xQueueSelectFromSet() 返回的 QueueSetMemberHandle_t 值转换为 QueueHandle_t，
+        因为已知该集合的所有成员都是队列（队列集合不包含任何信号量）。 */
+        xQueueThatContainsData = (QueueHandle_t)xQueueSelectFromSet(
+            xQueueSet, portMAX_DELAY);
+        /* 从队列集合中读取时使用了不确定的阻塞时间，因此 xQueueSelectFromSet() 将不会返回，除非集合中的队列之一包含数据，
+        并且 xQueueThatContainsData 不能为 NULL。从队列中读取。没有必要指定阻塞时间，因为已知队列包含数据。出块时间设置为0。 */
+        xQueueReceive(xQueueThatContainsData, &pcReceivedString, 0);
+        /* Print the string received from the queue. */
+        vPrintString(pcReceivedString);
+    }
+}
+
+int main(void)
+{
+    /* 创建两个队列，它们都发送字符指针。接收任务的优先级高于发送任务的优先级，因此队列中任何时刻都不会包含超过一项的项目*/
+    xQueue1 = xQueueCreate(1, sizeof(char *));
+    xQueue2 = xQueueCreate(1, sizeof(char *));
+    /* 创建队列集。将向集合中添加两个队列，每个队列可包含 1 个项目，因此队列集一次必须保存的最大队列句柄数为 2（2 个队列乘以每个队列 1 个项目）。 */
+    xQueueSet = xQueueCreateSet(1 * 2);
+    /* 2个队列加入队列集 */
+    xQueueAddToSet(xQueue1, xQueueSet);
+    xQueueAddToSet(xQueue2, xQueueSet);
+    /* 创建任务发送队列 */
+    xTaskCreate(vSenderTask1, "Sender1", 1000, NULL, 1, NULL);
+    xTaskCreate(vSenderTask2, "Sender2", 1000, NULL, 1, NULL);
+    /* 创建从队列集中读取数据的任务，以确定两个队列中哪一个包含数据。 */
+    xTaskCreate(vReceiverTask, "Receiver", 1000, NULL, 2, NULL);
+    /* 启动调度程序，以便创建的任务开始执行。 */
+    vTaskStartScheduler();
+    /*正常情况下，vTaskStartScheduler() 不应返回，因此以下几行永远不会执行。 */
+    for (;;)
+        ;
+    return 0;
+}
+```
+
+[图5.6.5-1](#Pic5.6.5-1)上面代码生成的输出。可以看出，接收任务从两个发送任务接收到字符串。 vSenderTask1() 使用的块时间是 vSenderTask2() 使用的块时间的一半，这导致 vSenderTask1() 发送的字符串打印频率是 vSenderTask2() 发送的字符串的两倍。
+
+![image-20260113010325469](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260113010325469.png)
+
+<a id="Pic5.6.5-1"></a>
+
+### 更现实的队列集用例
+
+示例5.6.5演示了一个非常简单的情况；队列集只包含队列，并且它包含的两个队列都用于发送字符指针。在实际应用程序中，队列集可能同时包含队列和信号量，并且队列可能并不都保存相同的数据类型。在这种情况下，在使用 xQueueSelectFromSet() 返回的值之前，有必要测试该返回值。示例5.6.6演示了当集合具有以下成员时如何使用 xQueueSelectFromSet() 返回的值：
+
+* 二进制信号量
+* 读取字符指针的队列
+* 读取uint32_t值的队列
+
+```cpp
+/* 从中接收字符指针的队列的句柄。 */
+QueueHandle_t xCharPointerQueue;
+/* T用于接收 uint32_t 类型值的队列句柄 */
+QueueHandle_t xUint32tQueue;
+/* 二进制信号量句柄  */
+SemaphoreHandle_t xBinarySemaphore;
+/* 包含上述两个队列和二进制信号量的队列集合 */
+QueueSetHandle_t xQueueSet;
+
+void vAMoreRealisticReceiverTask(void *pvParameters)
+{
+    QueueSetMemberHandle_t xHandle;
+    char *pcReceivedString;
+    uint32_t ulRecievedValue;
+    const TickType_t xDelay100ms = pdMS_TO_TICKS(100);
+    for (;;)
+    {
+        /* 在队列集合上阻塞等待最多 100ms，直到集合中的某个成员包含数据 */
+        xHandle = xQueueSelectFromSet(xQueueSet, xDelay100ms);
+        /* 检查 xQueueSelectFromSet() 的返回值。如果返回值为 NULL，
+    则表示 xQueueSelectFromSet() 调用超时。如果返回值不为 NULL，
+    则返回值将是集合中某个成员的句柄。QueueSetMemberHandle_t 类型的值
+    可以转换为 QueueHandle_t 或 SemaphoreHandle_t。是否需要显式转换取决于编译器。 */
+        if (xHandle == NULL)
+        {
+            /* xQueueSelectFromSet() 调用超时 */
+        }
+        else if (xHandle == (QueueSetMemberHandle_t)xCharPointerQueue)
+        {
+            /* xQueueSelectFromSet() 返回了接收字符指针的队列句柄。
+        从该队列读取数据。已知队列包含数据，因此阻塞时间设为 0。 */
+            xQueueReceive(xCharPointerQueue, &pcReceivedString, 0);
+            /* 可以在此处处理接收到的字符指针... */
+        }
+        else if (xHandle == (QueueSetMemberHandle_t)xUint32tQueue)
+        {
+            /* xQueueSelectFromSet() 返回了接收 uint32_t 类型的队列句柄。
+        从该队列读取数据。已知队列包含数据，因此阻塞时间设为 0。 */
+            xQueueReceive(xUint32tQueue, &ulRecievedValue, 0);
+            /* 可以在此处处理接收到的值...  */
+        }
+        else if (xHandle == (QueueSetMemberHandle_t)xBinarySemaphore)
+        {
+            /* xQueueSelectFromSet() 返回了二进制信号量的句柄。
+            现在获取信号量。已知信号量可用，因此阻塞时间设为 0。*/
+            xSemaphoreTake(xBinarySemaphore, 0);
+            /* 可以在获取信号量后执行必要的处理... */
+        }
+    }
+}
+```
+
+## 使用队列创建邮箱
 
 
 [^1]: 第4.13节描述了调度算法。
