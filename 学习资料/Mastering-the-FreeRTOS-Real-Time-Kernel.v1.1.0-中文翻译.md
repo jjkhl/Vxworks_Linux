@@ -3012,6 +3012,130 @@ void vAMoreRealisticReceiverTask(void *pvParameters)
 
 ## 使用队列创建邮箱
 
+嵌入式社区内的术语尚未达成共识，“邮箱”在不同的 RTOS 中具有不同的含义。在本书中，术语“邮箱”用于指代长度为 1 的队列。队列可以被描述为邮箱，因为它在应用程序中的使用方式，而不是因为它与队列有功能差异：
+
+* 队列用于将数据从一个任务发送到另一任务，或从中断服务例程发送到任务。发送者将一个项目放入队列中，接收者从队列中删除该项目。数据通过队列从发送方传递到接收方。
+* 邮箱用于保存可由任何任务或任何中断服务例程读取的数据。数据不会通过邮箱，而是保留在邮箱中，直到被覆盖。发件人覆盖邮箱中的值。接收方从邮箱中读取该值，但不会从邮箱中删除该值
+
+本章介绍两个队列 API 函数，它们使队列能够用作邮箱。
+
+```cpp
+/* 邮箱可以容纳固定大小的数据项。数据项的大小是在创建邮箱（队列）时设置的。在此示例中，创建邮箱来保存Example_t 结构。
+   Example_t 包含一个时间戳，允许邮箱中保存的数据记录邮箱上次更新的时间。
+   本示例中使用的时间戳仅用于演示目的 - 邮箱可以保存应用程序编写者想要的任何数据，并且数据不需要包含时间戳。*/
+typedef struct xExampleStructure
+{
+    TickType_t xTimeStamp;
+    uint32_t ulValue;
+} Example_t;
+/* 邮箱是一个队列，因此它的句柄存储在QueueHandle_t类型的变量中。 */
+QueueHandle_t xMailbox;
+void vAFunction(void)
+{
+    /* 创建将用作邮箱的队列。队列的长度为 1，以允许它与 xQueueOverwrite() API 函数一起使用，如下所述。 */
+    xMailbox = xQueueCreate(1, sizeof(Example_t));
+}
+```
+
+### xQueueOverwrite 函数
+
+与 xQueueSendToBack() API 函数一样，xQueueOverwrite() API 函数将数据发送到队列。与 xQueueSendToBack() 不同，如果队列已满，则 xQueueOverwrite() 会覆盖队列中已有的数据。
+
+xQueueOverwrite() 只能与长度为 1 的队列一起使用。覆盖模式总是写入队列的前端并更新队列的前端指针，但不会更新等待的消息。如果定义了 configASSERT，则当队列长度 > 1 时将发生断言。
+
+> 注意：切勿从中断服务例程中调用 xQueueOverwrite()。应使用中断安全版本 xQueueOverwriteFromISR() 来代替它。
+
+```cpp
+BaseType_t xQueueOverwrite( QueueHandle_t xQueue, const void * pvItemToQueue );
+```
+
+xQueueOverwrite入参和出参：
+
+* xQueue：数据发送（写入）到的队列的句柄。队列句柄将从调用用于创建队列的 xQueueCreate() 或 xQueueCreateStatic() 返回。
+* pvItemToQueue：指向要复制到队列中的数据的指针。队列可以容纳的每个项目的大小是在创建队列时设置的，因此这么多字节将从pvItemToQueue复制到队列存储区域。
+* 出参：即使队列已满，xQueueOverwrite() 也会写入队列，因此 pdPASS 是唯一可能的返回值。
+
+```cpp
+void vUpdateMailbox(uint32_t ulNewValue)
+{
+    /* Example_t was defined in Listing 5.28. */
+    Example_t xData;
+    /* 将新数据写入Example_t结构中。*/
+    xData.ulValue = ulNewValue;
+    /* 使用 RTOS 滴答计数作为存储在 Example_t 结构中的时间戳。 */
+    xData.xTimeStamp = xTaskGetTickCount(); /* 使用 RTOS 滴答计数作为存储在 Example_t 结构中的时间戳。 */
+    xQueueOverwrite(xMailbox, &xData);
+}
+```
+
+### xQueuePeek函数
+
+xQueuePeek()从队列接收（读取）项目，而不从队列中删除该项目。
+
+xQueuePeek()从队列头接收数据，而不修改队列中存储的数据，也不修改数据在队列中存储的顺序。
+
+> 注意：切勿从中断服务例程中调用 xQueuePeek()。应使用中断安全版本 xQueuePeekFromISR() 代替它。
+
+xQueuePeek()与xQueueReceive()具有相同的函数参数和返回值。
+
+```cpp
+BaseType_t xQueuePeek(QueueHandle_t xQueue,
+                      void *const pvBuffer,
+                      TickType_t xTicksToWait);
+
+BaseType_t vReadMailbox(Example_t *pxData)
+{
+    TickType_t xPreviousTimeStamp;
+    BaseType_t xDataUpdated;
+    /* 该函数使用从邮箱接收到的最新值更新Example_t结构。在被新数据覆盖之前，记录 *pxData 中已包含的时间戳。 */
+    xPreviousTimeStamp = pxData->xTimeStamp;
+    /* 使用邮箱中包含的数据更新 pxData 指向的 Example_t 结构。
+    如果此处使用 xQueueReceive()，则邮箱将保留为空，并且任何其他任务都无法读取数据。
+    使用 xQueuePeek() 而不是 xQueueReceive() 可确保数据保留在邮箱中。
+    指定了阻塞时间，因此如果邮箱为空，则调用任务将置于阻塞状态以等待邮箱包含数据。
+    使用无限块时间，因此没有必要检查从 xQueuePeek() 返回的值，因为 xQueuePeek() 仅当数据可用时才会返回。 */
+    xQueuePeek(xMailbox, pxData, portMAX_DELAY); /* 如果自上次调用此函数以来从邮箱读取的值已更新，则返回 pdTRUE。否则返回 pdFALSE。*/
+    if (pxData->xTimeStamp > xPreviousTimeStamp)
+    {
+        xDataUpdated = pdTRUE;
+    }
+    else
+    {
+        xDataUpdated = pdFALSE;
+    }
+    return xDataUpdated;
+}
+```
+
+# 软件定时器管理
+
+## 章节简介和范围
+
+软件定时器用于安排函数在未来的设定时间执行，或者以固定频率定期执行。软件定时器执行的函数称为软件定时器的回调函数。
+
+软件定时器由 FreeRTOS 内核实现并受其控制。它们不需要硬件支持，并且与硬件定时器或硬件计数器无关。
+
+请注意，根据 FreeRTOS 使用创新设计确保最大效率的理念，软件计时器不会使用任何处理时间，除非实际执行软件计时器回调函数。
+
+软件定时器功能是可选的。要包含软件定时器功能：
+
+* 将 FreeRTOS 源文件 FreeRTOS/Source/timers.c 构建为项目的一部分。
+* 在应用程序的 FreeRTOSConfig.h 头文件中定义下面详细说明的常量：
+  * configUSE_TIMERS：在FreeRTOSConfig.h中设置为1
+  * configTIMER_TASK_PRIORITY：将定时器服务任务的优先级设置在 0 和 ( configMAX_PRIORITIES - 1 ) 之间。
+  * configTIMER_QUEUE_LENGTH：设置定时器命令队列在任一时刻可以容纳的未处理命令的最大数量。
+  * configTIMER_TASK_STACK_DEPTH：设置分配给定时器服务任务的堆栈大小（以字为单位，而不是字节）
+
+### 范围
+
+  本章包括：
+
+* 软件定时器的特性与任务的特性相比。
+* RTOS 守护进程任务
+* 定时器命令队列。
+* 一次性软件定时器和周期性软件定时器之间的区别。
+* 如何创建、启动、重置和更改软件计时器的周期。
+
 
 [^1]: 第4.13节描述了调度算法。
 [^2]: 这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
