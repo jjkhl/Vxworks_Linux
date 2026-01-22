@@ -3136,6 +3136,254 @@ BaseType_t vReadMailbox(Example_t *pxData)
 * 一次性软件定时器和周期性软件定时器之间的区别。
 * 如何创建、启动、重置和更改软件计时器的周期。
 
+## 软件定时器回调函数
+
+软件定时器回调函数以 C 函数的形式实现。它们唯一的特别之处是它们的原型，它必须返回 void，并采用软件计时器的句柄作为其唯一参数。回调函数原型如下所示。
+
+```cpp
+void ATimerCallback(TimerHandle_t xTimer);
+```
+
+软件定时器回调函数从头到尾执行，并以正常方式退出。它们应该保持较短，并且不得进入阻塞状态。
+
+> 注意：正如我们将看到的，软件定时器回调函数在 FreeRTOS 调度程序启动时自动创建的任务上下文中执行。因此，软件定时器回调函数切勿调用 FreeRTOS API 函数，否则会导致调用任务进入阻塞状态，这一点至关重要。可以调用 xQueueReceive() 等函数，但前提是函数的 xTicksToWait 参数（指定函数的阻塞时间）设置为 0。调用 vTaskDelay() 等函数是不行的，因为调用 vTaskDelay() 始终会将调用任务置于阻塞状态。
+
+## 软件定时器的属性和状态
+
+### 软件定时器的周期
+
+软件定时器的“周期”是软件定时器启动和软件定时器回调函数执行之间的时间。
+
+### 一次性和自动重新加载计时器
+
+有两种软件计时器：
+
+* 一次性计时器：一旦启动，一次性计时器将仅执行其回调函数一次。一次性计时器可以手动重新启动，但不会自行重新启动。
+* 自动重新加载计时器：一旦启动，自动重新加载计时器将在每次到期时重新启动，从而定期执行其回调函数。
+
+下图显示了一次性定时器和自动重载定时器之间的行为差异。垂直虚线标记了滴答中断发生的时间。
+
+![一次性软件计时器和自动重新加载软件计时器之间的行为差异](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260119230936954.png)
+
+* Timer1：定时器 1 是一个单次定时器，周期为 6 个滴答声。它在时间 t1 启动，因此其回调函数在 6 个时钟周期后的时间 t7 执行。由于定时器1是一次性定时器，其回调函数不会再次执行
+* Timer2：定时器 2 是一个自动重载定时器，周期为 5 个滴答声。它在时间 t1 启动，因此其回调函数在时间 t1 之后每 5 个周期执行一次。在上图中，时间为 t6、t11 和 t16。
+
+### 软件定时器状态
+
+软件定时器状态有以下两种：
+
+* 休眠：休眠软件定时器存在，并且可以通过其句柄引用，但未运行，因此其回调函数不会执行。
+* 运行：运行软件定时器将在自软件定时器进入运行状态或自上次重置软件定时器以来等于其周期的时间过去后执行其回调函数。
+
+下面两图分别显示自动重载计时器和一次性计时器的休眠和运行状态之间可能的转换。两个图之间的主要区别在于计时器到期后进入的状态；自动重载定时器执行回调函数后重新进入运行状态，一次性定时器执行回调函数后进入休眠状态。
+
+![自动重新加载软件定时器状态和转换](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260120010413257.png)
+
+![一次性软件定时器状态和转换](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260120010438263.png)
+
+xTimerDelete() API 函数删除计时器。计时器可以随时删除。
+
+```cpp
+BaseType_t xTimerDelete(TimerHandle_t xTimer, TickType_t xTicksToWait);
+/*
+xTimer：正在删除的计时器的句柄。
+xTicksToWait：指定调用任务应保持在阻塞状态以等待删除命令成功发送到计时器命令队列的时间（以时钟周期为单位）（如果在调用 xTimerDelete() 时队列已满）。如果在调度程序启动之前调用 xTimerDelete()，则 xTicksToWait 将被忽略。
+返回值：
+pdPASS：如果命令成功发送到定时器命令队列，则返回 pdPASS。
+pdFAIL：如果即使在 xBlockTime 周期过去后仍无法将删除命令发送到计时器命令队列，则将返回 pdFAIL。
+/*
+```
+
+## 软件定时器的上下文
+
+### RTOS 守护进程（定时器服务）任务
+
+所有软件定时器回调函数都在同一 RTOS 守护程序（或“定时器服务”）任务的上下文中执行[^10]。
+
+守护进程任务是一个标准的 FreeRTOS 任务，在调度程序启动时自动创建。它的优先级和堆栈大小分别由 configTIMER_TASK_PRIORITY 和 configTIMER_TASK_STACK_DEPTH 编译时配置常量设置。这两个常量都在 FreeRTOSConfig.h 中定义。
+
+软件定时器回调函数不得调用会导致调用任务进入阻塞状态的 FreeRTOS API 函数，因为这样做会导致守护任务进入阻塞状态。
+
+### 定时器命令队列
+
+软件计时器 API 函数将命令从调用任务发送到称为“计时器命令队列”的队列上的守护程序任务。如下图所示。命令示例包括“启动计时器”、“停止计时器”和“重置计时器”。
+
+定时器命令队列是一个标准的 FreeRTOS 队列，在调度程序启动时自动创建。定时器命令队列的长度由 FreeRTOSConfig.h 中的 configTIMER_QUEUE_LENGTH 编译时配置常量设置。
+
+![软件定时器 API 函数使用定时器命令队列与 RTOS 守护程序任务进行通信](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260121002928792.png)
+
+### 守护进程任务调度
+
+守护进程任务的调度与任何其他 FreeRTOS 任务一样；当它是能够运行的最高优先级任务时，它只会处理命令或执行计时器回调函数。下面两图演示了 configTIMER_TASK_PRIORITY 设置如何影响执行模式。
+
+下图显示了当守护任务的优先级低于调用 xTimerStart() API 函数的任务的优先级时的执行模式。
+
+![当调用 xTimerStart() 的任务的优先级高于守护进程任务的优先级时的执行模式](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260121012339552.png)
+
+其中任务1的优先级高于守护任务的优先级，守护任务的优先级高于Idle任务的优先级：
+
+* t1时间：任务1处于运行状态，守护任务处于阻塞状态。如果有命令发送到定时器命令队列，守护任务将离开阻塞状态，在这种情况下，它将处理该命令，或者如果软件定时器到期，在这种情况下，它将执行软件定时器的回调函数。
+* t2时间：任务 1 调用 xTimerStart()。xTimerStart() 向定时器命令队列发送命令，导致守护任务离开阻塞状态。任务 1 的优先级高于守护任务的优先级，因此守护任务不会抢占任务 1。任务1仍处于运行状态，守护任务已离开阻塞状态并进入就绪状态。
+* t3时间：任务 1 完成 xTimerStart() API 函数的执行。任务1从函数开始到函数结束执行xTimerStart()，没有离开Running状态。
+* t4时间：任务 1 调用 API 函数，导致其进入阻塞状态。守护任务现在是Ready状态下优先级最高的任务，因此调度程序选择守护任务作为进入Running状态的任务。然后守护任务开始处理任务 1 发送到定时器命令队列的命令。
+
+> 注意：正在启动的软件计时器的到期时间是从“启动计时器”命令发送到计时器命令队列的时间开始计算的，而不是从守护程序任务从计时器命令队列接收到“启动计时器”命令的时间开始计算。
+
+* t5时间：守护任务已完成处理任务 1 发送给它的命令，并尝试从计时器命令队列接收更多数据。定时器命令队列为空，因此守护任务重新进入Blocked状态。如果命令被发送到计时器命令队列，或者软件计时器到期，守护程序任务将再次离开阻塞状态。Idle任务现在是Ready状态下优先级最高的任务，因此调度器选择Idle任务作为进入Running状态的任务。
+
+下图显示了与上图类似的场景，但这次守护任务的优先级高于调用 xTimerStart() 的任务的优先级。
+
+![当调用 xTimerStart() 的任务的优先级低于守护任务的优先级时的执行模式](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260121013348540.png)
+
+其中守护任务的优先级高于任务1的优先级，任务1的优先级高于Idle任务的优先级：
+
+* t1时间：和之前一样，任务 1 处于运行状态，守护任务处于阻塞状态。
+* t2时间：任务1调用xTimerStart()。xTimerStart() 向定时器命令队列发送命令，导致守护任务离开阻塞状态。守护任务的优先级高于任务1的优先级，因此调度程序选择守护任务作为进入运行状态的任务。任务 1 在完成执行 xTimerStart() 函数之前被守护任务抢占，现在处于就绪状态。守护任务开始处理任务1发送到定时器命令队列的命令。
+* t3时间：守护任务已完成处理任务 1 发送给它的命令，并尝试从计时器命令队列接收更多数据。定时器命令队列为空，因此守护任务重新进入Blocked状态。任务1现在是Ready状态中优先级最高的任务，因此调度程序选择Task 1作为进入Running状态的任务。
+* t4时间：任务 1 在执行完 xTimerStart() 函数之前就被守护任务抢占，只有在重新进入 Running 状态后才退出（从）xTimerStart() 函数。
+* t5时间：任务 1 调用 API 函数，导致其进入阻塞状态。 Idle任务现在是Ready状态下优先级最高的任务，因此调度器选择Idle任务作为进入Running状态的任务。
+
+在图 6.5 所示的场景中，从任务 1 向定时器命令队列发送命令到守护任务接收并处理该命令之间经过了一段时间。在图6.6所示的场景中，在任务1从发送命令的函数返回之前，守护任务已经接收并处理了任务1发送给它的命令。
+
+发送到定时器命令队列的命令包含时间戳。时间戳用于计算应用程序任务发送的命令与守护程序任务处理的同一命令之间经过的任何时间。例如，如果发送“启动计时器”命令来启动周期为 10 个时钟周期的计时器，则时间戳用于确保正在启动的计时器在命令发送后 10 个时钟周期到期，而不是在守护程序任务处理命令后的 10 个时钟周期到期。
+
+## 创建并启动软件定时器
+
+### xTimerCreate函数
+
+FreeRTOS 还包含 xTimerCreateStatic() 函数，该函数在编译时静态分配创建计时器所需的内存：软件计时器必须在使用之前显式创建。
+
+软件定时器由 TimerHandle_t 类型的变量引用。 xTimerCreate() 用于创建软件定时器并返回 TimerHandle_t 来引用它创建的软件定时器。软件定时器是在休眠状态下创建的。
+
+软件计时器可以在调度程序运行之前创建，也可以在调度程序启动后从任务创建。
+
+```cpp
+TimerHandle_t xTimerCreate(const char* const pcTimerName, const TickType_t xTimerPeriodInTicks,
+                           const BastType_t xAutoReload, void* const pvTimerID,
+                           TimerCallbackFunction_t pxCallbackFunction);
+```
+
+xTimerCreate入参和出参：
+
+* pcTimerName：计时器的描述性名称。 FreeRTOS 不会以任何方式使用它。它纯粹是作为调试辅助工具而包含在内。通过人类可读的名称来识别计时器比尝试通过句柄来识别计时器要简单得多。
+* xTimerPeriodInTicks：计时器的周期以刻度为单位指定。 pdMS_TO_TICKS() 宏可用于将以毫秒为单位的时间转换为以刻度为单位的时间。不能为 0。
+* xAutoReload：将 xAutoReload 设置为 pdTRUE 以创建自动重新加载计时器。将 xAutoReload 设置为 pdFALSE 以创建一次性计时器。
+* pvTimerID：每个软件定时器都有一个ID值。 ID 是一个空指针，应用程序编写者可以将其用于任何目的。当多个软件定时器使用同一个回调函数时，ID 特别有用，因为它可用于提供定时器特定的存储。本章的示例演示了定时器 ID 的使用。pvTimerID 为正在创建的任务的 ID 设置初始值。
+* pxCallbackFunction：软件定时器回调函数只是前面提到的ATimerCallback函数。 pxCallbackFunction 参数是指向函数的指针（实际上，只是函数名称），用作正在创建的软件计时器的回调函数。
+* 出参
+  * 如果返回 NULL，则无法创建软件计时器，因为没有足够的堆内存可供 FreeRTOS 分配必要的数据结构
+  * 如果返回非NULL值，则表明软件定时器创建成功。返回值是创建的定时器的句柄
+  * 第 3 章提供了有关堆内存管理的更多信息。
+
+### xTimerStart函数
+
+xTimerStart()用于启动处于休眠状态的软件定时器，或重置（重新启动）处于运行状态的软件定时器。 xTimerStop() 用于停止处于运行状态的软件定时器。停止软件定时器与将定时器转换为休眠状态相同。
+
+xTimerStart() 可以在调度程序启动之前调用，但是完成此操作后，软件计时器直到调度程序启动时才会真正启动。
+
+> 注意：切勿从中断服务例程中调用 xTimerStart()。应使用中断安全版本 xTimerStartFromISR() 来代替它。
+
+```cpp
+BaseType_t xTimerStart(TimerHandle_t xTimer, TickType_t xTicksToWait);
+```
+
+xTimerStart入参和出参：
+
+* xTimer：正在启动或重置的软件定时器的句柄。该句柄将从调用用于创建软件计时器的 xTimerCreate() 返回。
+* xTicksToWait：
+  * xTimerStart() 使用计时器命令队列将“启动计时器”命令发送到守护程序任务。 xTicksToWait 指定调用任务应保持在阻塞状态以等待计时器命令队列上的空间变得可用的最长时间（如果队列已满）。
+  * 如果 xTicksToWait 为零且计时器命令队列已满，xTimerStart() 将立即返回。
+  * 区块时间以滴答周期为单位指定，因此它表示的绝对时间取决于滴答频率。宏 pdMS_TO_TICKS() 可用于将以毫秒为单位的时间转换为以刻度为单位的时间。
+  * 如果在 FreeRTOSConfig.h 中将 INCLUDE_vTaskSuspend 设置为 1，则将 xTicksToWait 设置为 portMAX_DELAY 将导致调用任务无限期地保持在阻塞状态（没有超时），以等待计时器命令队列中的空间变得可用。
+  * 如果在启动调度程序之前调用 xTimerStart()，则忽略 xTicksToWait 的值，并且 xTimerStart() 的行为就像 xTicksToWait 已设置为零一样。
+* 出参：两种可能
+  * pdPASS：仅当“启动计时器”命令成功发送到计时器命令队列时，才会返回 pdPASS。
+    * 如果守护任务的优先级高于调用 xTimerStart() 的任务的优先级，则调度程序将确保在 xTimerStart() 返回之前处理启动命令。这是因为一旦定时器命令队列中有数据，守护任务就会抢占调用 xTimerStart() 的任务。
+    * 如果指定了阻塞时间（xTicksToWait 不为零），则调用任务有可能在函数返回之前被置于阻塞状态以等待计时器命令队列中的空间变得可用，但在阻塞时间到期之前数据已成功写入计时器命令队列。
+  * pdFAIL：如果由于队列已满而无法将“启动计时器”命令写入计时器命令队列，则将返回 pdFAIL。如果指定了阻塞时间（xTicksToWait 不为零），则调用任务将被置于阻塞状态，以等待守护进程任务在计时器命令队列中腾出空间，但指定的阻塞时间在此之前已过期。
+
+### 示例6.1：创建一次性和自动重新加载计时器
+
+```cpp
+/* 分配给一次性定时器和自动重新加载定时器的周期分别为 3.333 秒和半秒。 */
+#define mainONE_SHOT_TIMER_PERIOD pdMS_TO_TICKS(3333)
+#define mainAUTO_RELOAD_TIMER_PERIOD pdMS_TO_TICKS(500)
+int main(void)
+{
+    TimerHandle_t xAutoReloadTimer, xOneShotTimer;
+    BaseType_t xTimer1Started, xTimer2Started;
+    /* 创建一次性计时器，并将创建的计时器的句柄存储在 xOneShotTimer 中。 */
+    xOneShotTimer = xTimerCreate(
+        /* 软件计时器的文本名称 - FreeRTOS 不使用。 */
+        "OneShot",
+        /* 软件定时器的周期（以滴答为单位）。 */
+        mainONE_SHOT_TIMER_PERIOD,
+        /* 将 uxAutoRealod 设置为 pdFALSE 会创建一次性软件计时器。 */
+        pdFALSE,
+        /* 此示例不使用计时器 ID。 */
+        0,
+        /* 正在创建的软件定时器要使用的回调函数。 */
+        prvOneShotTimerCallback);
+    /* 创建自动重载计时器，并将创建的计时器的句柄存储在 xAutoReloadTimer 中。 */
+    xAutoReloadTimer = xTimerCreate(
+        /* 软件计时器的文本名称 - FreeRTOS 不使用。 */
+        "AutoReload",
+        /* 软件定时器的周期（以滴答为单位）。 */
+        mainAUTO_RELOAD_TIMER_PERIOD,
+        /* 将 uxAutoRealod 设置为 pdTRUE 会创建一个自动重新加载计时器。 */
+        pdTRUE,
+        /* 此示例不使用计时器 ID。 */
+        0,
+        /* 正在创建的软件定时器要使用的回调函数。 */
+        prvAutoReloadTimerCallback);
+    /* 检查软件定时器是否已创建。 */
+    if ((xOneShotTimer != NULL) && (xAutoReloadTimer != NULL))
+    {
+        /* 启动软件计时器，使用块时间 0（无块时间）。调度程序尚未启动，因此此处指定的任何块时间都将被忽略。*/
+        xTimer1Started = xTimerStart(xOneShotTimer, 0);
+        xTimer2Started = xTimerStart(xAutoReloadTimer, 0);
+        /* xTimerStart() 的实现使用计时器命令队列，如果计时器命令队列已满，xTimerStart() 将失败。
+        定时器服务任务在调度程序启动之前不会创建，因此发送到命令队列的所有命令都将保留在队列中，
+        直到调度程序启动后。检查对 xTimerStart() 的两次调用是否已通过。 */
+        if ((xTimer1Started == pdPASS) && (xTimer2Started == pdPASS))
+        {
+            /* Start the scheduler. */
+            vTaskStartScheduler();
+        }
+    }
+    /* As always, this line should not be reached. */
+    for (;;)
+        ;
+}
+
+static void prvOneShotTimerCallback(TimerHandle_t xTimer)
+{
+    TickType_t xTimeNow;
+    /* 获取当前的滴答数。 */
+    xTimeNow = xTaskGetTickCount();
+    /* 输出一个字符串来显示回调执行的时间。 */
+    vPrintStringAndNumber("One-shot timer callback executing", xTimeNow);
+    /* 文件范围变量。*/
+    ulCallCount++;
+}
+
+static void prvAutoReloadTimerCallback(TimerHandle_t xTimer)
+{
+    TickType_t xTimeNow;
+    /* 获取当前的滴答数。 */
+    xTimeNow = xTaskGetTickCount();
+    /* 输出一个字符串来显示回调执行的时间。 */
+    vPrintStringAndNumber("Auto-reload timer callback executing", xTimeNow);
+    ulCallCount++;
+}
+```
+
+下图显示了自动重载定时器的回调函数以500个周期(半秒)的固定周期执行，一次性定时器的回调函数仅在周期计数为3333时执行一次。
+
+![执行示例6.1时产生的输出](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260123010353468.png)
+
+## 计时器 ID
+
 
 [^1]: 第4.13节描述了调度算法。
 [^2]: 这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
@@ -3146,3 +3394,4 @@ BaseType_t vReadMailbox(Example_t *pxData)
 [^7]: 本书后文将介绍在任务之间安全共享资源的方法。FreeRTOS本身提供的资源，如队列和信号量，总是可以在任务之间安全共享。
 [^8]: FreeRTOS消息缓冲，如在待定章节中所述，提供了一种比持有可变长度消息的队列更轻量级的替代方案。
 [^9]: FreeRTOS 消息缓冲区是保存可变长度数据的队列的轻量级替代方案
+[^10]: 该任务过去被称为“定时器服务任务”，因为最初它仅用于执行软件定时器回调函数。现在，同一任务也用于其他目的，因此它被称为“RTOS 守护程序任务”这一更通用的名称。 
