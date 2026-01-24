@@ -3384,6 +3384,260 @@ static void prvAutoReloadTimerCallback(TimerHandle_t xTimer)
 
 ## 计时器 ID
 
+每个软件定时器都有一个 ID，它是一个标签值，应用程序编写者可以将其用于任何目的。ID 存储在 void 指针（void *）中，因此它可以直接存储整数值，指向任何其他对象，或用作函数指针。
+
+创建软件定时器时，会为 ID 分配一个初始值，之后可以使用 vTimerSetTimerID() API 函数更新 ID，并使用 pvTimerGetTimerID() API 函数查询 ID。
+
+与其他软件定时器 API 函数不同，vTimerSetTimerID() 和 pvTimerGetTimerID() 直接访问软件定时器，它们不向定时器命令队列发送命令。
+
+### vTimerSetTimerID函数
+
+```cpp
+void vTimerSetTimerID(const TimerHandle_t xTimer, void* pvNewID);
+/*
+	xTimer：软件定时器的句柄正在更新为新的 ID 值。该句柄将从调用用于创建软件计时器的 xTimerCreate() 返回。
+	pvNewID：软件定时器 ID 将设置的值。
+*/
+```
+
+### pvTimerGetTimerID函数
+
+```cpp
+void* pvTimerGetTimerID(const TimerHandle_t xTimer);
+/*
+	xTimer：软件定时器的句柄正在更新为新的 ID 值。该句柄将从调用用于创建软件计时器的 xTimerCreate() 返回。
+	出参：正在查询的软件定时器的ID。
+*/
+```
+
+### 示例6.2：使用回调函数参数和软件定时器ID
+
+同一回调函数可以分配给多个软件定时器。完成后，回调函数参数用于确定哪个软件计时器到期。
+
+例 6.1 使用了两个独立的回调函数；一个回调函数由一次性计时器使用，另一个回调函数由自动重新加载计时器使用。例 6.2 创建了与例 6.1 类似的功能，但为两个软件定时器分配了一个回调函数。
+
+例 6.2 使用的 main() 函数与例 6.1 使用的 main() 函数几乎相同。唯一的区别在于软件计时器的创建位置。这种差异如下所示，其中 prvTimerCallback() 用作两个计时器的回调函数。
+
+prvTimerCallback() 将在任一计时器到期时执行。 prvTimerCallback() 的实现使用该函数的参数来确定调用它是因为一次性计时器到期还是因为自动重载计时器到期。
+
+prvTimerCallback() 还演示了如何使用软件定时器 ID 作为定时器特定存储；每个软件计时器都会在其自己的 ID 中保存其过期次数的计数，并且自动重新加载计时器在第五次执行时使用该计数来停止自身。
+
+prvTimerCallback() 的实现如下所示。
+
+```cpp
+/* 创建单次定时器软件定时器，将句柄存储在 xOneShotTimer 中。 */
+xOneShotTimer = xTimerCreate("OneShot",
+                             mainONE_SHOT_TIMER_PERIOD,
+                             pdFALSE,
+                             /* 定时器的 ID 被初始化为 NULL。 */
+                             NULL,
+                             /* prvTimerCallback() 由两个计时器使用。 */
+                             prvTimerCallback); /* 创建自动重载软件定时器，将句柄存储在xAutoReloadTimer中 */
+xAutoReloadTimer = xTimerCreate("AutoReload",
+                                mainAUTO_RELOAD_TIMER_PERIOD,
+                                pdTRUE,
+                                /* 定时器的 ID 被初始化为 NULL。 */
+                                NULL,
+                                /* prvTimerCallback() 由两个计时器使用。 */
+                                prvTimerCallback);
+static void prvTimerCallback(TimerHandle_t xTimer)
+{
+    TickType_t xTimeNow;
+    uint32_t ulExecutionCount;
+    /* 该软件计时器已过期的次数存储在计时器的 ID 中。获取 ID，递增它，然后将其保存为新的 ID 值。 ID 是一个 void 指针，因此被转换为 uint32_t。 */
+    ulExecutionCount = (uint32_t)pvTimerGetTimerID(xTimer);
+    ulExecutionCount++;
+    vTimerSetTimerID(xTimer, (void *)ulExecutionCount);
+    /* 获取当前的滴答数。 */
+    xTimeNow = xTaskGetTickCount();
+    /* 创建计时器时，一次性计时器的句柄存储在 xOneShotTimer 中。将传递到此函数的句柄与 xOneShotTimer 进行比较，以确定是否是一次性定时器或自动重新加载定时器到期，然后输出一个字符串以显示执行回调的时间。 */
+    if (xTimer == xOneShotTimer)
+    {
+        vPrintStringAndNumber("One-shot timer callback executing", xTimeNow);
+    }
+    else
+    {
+        /* xTimer 不等于 xOneShotTimer，因此它一定是自动重新加载计时器过期了。 */
+        vPrintStringAndNumber("Auto-reload timer callback executing", xTimeNow);
+        if (ulExecutionCount == 5)
+        {
+            /* 自动重载定时器执行5次后停止。此回调函数在 RTOS 守护程序任务的上下文中执行，因此不得调用任何可能使守护程序任务进入阻塞状态的函数。因此使用 0 的块时间。 */
+            xTimerStop(xTimer, 0);
+        }
+    }
+}
+```
+
+## 更改定时器的周期
+
+每个官方 FreeRTOS 端口都提供一个或多个示例项目。大多数示例项目都是自检的，并且使用 LED 来给出项目状态的视觉反馈；如果自检始终通过，则 LED 缓慢切换，如果自检失败，则 LED 快速切换。
+
+一些示例项目在任务中执行自检，并使用 vTaskDelay() 函数来控制 LED 切换的速率。其他示例项目在软件定时器回调函数中执行自检，并使用定时器的周期来控制 LED 切换的速率。
+
+### xTimerChangePeriod函数
+
+使用 xTimerChangePeriod() 函数更改软件定时器的周期。
+
+如果 xTimerChangePeriod() 用于更改已运行的计时器的周期，则计时器将使用新的周期值重新计算其到期时间。重新计算的到期时间是相对于调用 xTimerChangePeriod() 的时间，而不是相对于计时器最初启动的时间。
+
+如果使用 xTimerChangePeriod() 更改处于休眠状态（未运行的定时器）的定时器的周期，则定时器将计算到期时间，并转换为运行状态（定时器将开始运行）。
+
+> 注意：切勿从中断服务例程中调用 xTimerChangePeriod()。应使用中断安全版本 xTimerChangePeriodFromISR() 来代替它。
+
+```cpp
+BaseType_t xTimerChangePeriod(TimerHandle_t xTimer, TickType_t xTimerPeriodInTicks, TickType_t xTicksToWait);
+/*
+	xTimer：软件定时器的句柄正在更新为新的周期值。该句柄将从调用用于创建软件计时器的 xTimerCreate() 返回。
+	xTimerPeriodInTicks：软件计时器的新周期，以刻度为单位指定。 pdMS_TO_TICKS() 宏可用于将以毫秒为单位的时间转换为以刻度为单位的时间。
+	xTicksToWait：xTimerChangePeriod() 使用计时器命令队列将“更改周期”命令发送到守护程序任务。 xTicksToWait 指定调用任务应保持在阻塞状态以等待计时器命令队列上的空间变得可用的最长时间（如果队列已满。
+	如果 xTicksToWait 为零且计时器命令队列已满，xTimerChangePeriod() 将立即返回。
+	宏 pdMS_TO_TICKS() 可用于将以毫秒为单位的时间转换为以刻度为单位的时间。
+	如果在 FreeRTOSConfig.h 中将 INCLUDE_vTaskSuspend 设置为 1，则将 xTicksToWait 设置为 portMAX_DELAY 将导致调用任务无限期地保持在阻塞状态（没有超时），以等待计时器命令队列中的空间变得可用。
+	如果在启动调度程序之前调用 xTimerChangePeriod()，则 xTicksToWait 的值将被忽略，并且 xTimerChangePeriod() 的行为就像 xTicksToWait 已设置为零一样。
+	出参：
+	仅当数据成功发送到定时器命令队列时，才会返回 pdPASS。如果指定了阻塞时间（xTicksToWait 不为零），则调用任务有可能在函数返回之前被置于阻塞状态以等待计时器命令队列中的空间变得可用，但在阻塞时间到期之前数据已成功写入计时器命令队列。
+	如果由于队列已满而无法将“change period”命令写入计时器命令队列，则将返回 pdFAIL。如果指定了阻塞时间（xTicksToWait 不为零），则调用任务将被置于阻塞状态以等待守护程序任务在队列中腾出空间，但指定的阻塞时间在此之前已过期。
+*/
+```
+
+下面显示了在软件定时器回调函数中包含自检功能的 FreeRTOS 示例如何使用 xTimerChangePeriod() 来提高自检失败时 LED 切换的速率。执行自检的软件定时器称为“检查定时器”。
+
+```cpp
+/* 检查计时器的创建周期为 3000 毫秒，导致 LED 每 3 秒切换一次。
+如果自检功能检测到意外状态，则检查计时器的周期将更改为仅 200 毫秒，从而实现更快的切换速率。 */
+const TickType_t xHealthyTimerPeriod = pdMS_TO_TICKS(3000);
+const TickType_t xErrorTimerPeriod = pdMS_TO_TICKS(200);
+/* 检查计时器使用的回调函数。 */
+static void prvCheckTimerCallbackFunction(TimerHandle_t xTimer)
+{
+    static BaseType_t xErrorDetected = pdFALSE;
+    if (xErrorDetected == pdFALSE)
+    {
+        /* 尚未检测到任何错误。再次运行自检功能。该函数要求示例创建的每个任务报告其自身状态，并检查所有任务是否实际上仍在运行（因此能够正确报告其状态）。 */
+        if (CheckTasksAreRunningWithoutError() == pdFAIL)
+        {
+            /* 一项或多项任务报告了意外状态。可能发生了错误。
+            减少检查计时器的周期以提高该回调函数的执行速率，同时也提高 LED 的切换速率。
+            该回调函数在 RTOS 守护进程任务的上下文中执行，因此使用 0 的阻塞时间来确保守护进程任务永远不会进入阻塞状态。 */
+            xTimerChangePeriod(xTimer,            /* 计时器正在更新 */
+                               xErrorTimerPeriod, /* 定时器的新周期 */
+                               0);                /* 发送该命令时不阻塞 */
+        }
+        /* 锁定已检测到错误。 */
+        xErrorDetected = pdTRUE;
+    }
+    /* 切换 LED。 LED 切换的速率取决于调用该函数的频率，而调用频率又由检查计时器的周期决定。如果 CheckTasksAreRunningWithoutError() 返回 pdFAIL，计时器的周期将从 3000ms 减少到仅 200ms。 */
+    ToggleLED();
+}
+```
+
+## 重置软定时器
+
+重置软件定时器是指重新启动定时器；计时器的到期时间将根据计时器重置时（而不是计时器最初启动时）重新计算。下图对此进行了演示，其中显示了一个定时器，该定时器的周期为 6，被启动，然后重置两次，最后到期并执行其回调函数。
+
+![启动和重置周期为 6 个滴答的软件定时器](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260125030652712.png)
+
+流程如下：
+
+* 定时器 1 在时间 t1 启动。它的周期为6，因此它执行回调函数的时间最初计算为t7，即启动后的6个tick。
+* 定时器 1 在到达时间 t7 之前重置，即在它到期并执行其回调函数之前重置。定时器 1 在时间 t5 重置，因此它将执行回调函数的时间重新计算为 bet11，即重置后的 6 个时钟周期。
+* 定时器 1 在时间 t11 之前再次重置，因此在它到期并执行其回调函数之前再次重置。定时器 1 在时间 t9 重置，因此它执行回调函数的时间被重新计算为 t15，即距离上次重置后的 6 个时钟周期。
+* 定时器1不会再次复位，因此在时间t15时到期，并且相应地执行其回调函数。
+
+### xTimerReset函数
+
+使用 xTimerReset() API 函数重置计时器。
+
+xTimerReset() 还可用于启动处于休眠状态的计时器。
+
+> 注意：切勿从中断服务例程中调用 xTimerReset()。应使用中断安全版本 xTimerResetFromISR() 代替它
+
+```cpp
+BaseType_t xTimerReset( TimerHandle_t xTimer, TickType_t xTicksToWait );
+```
+
+### 示例6.3 重置软件定时器
+
+此示例模拟手机上背光的行为。背光：
+
+* 按钮按下打开
+* 如果在一定时间内按下更多按键，则保持开启状态。
+* 如果在一定时间内没有按键，则自动关闭。
+
+一次性软件定时器用于实现这一行为：
+
+* 当按键时，[模拟]背光打开，并在软件定时器的回调函数中关闭。
+* 每次按下按键时软件定时器都会重置。
+* 因此，必须按下按键以防止背光关闭的时间段等于软件定时器的周期；如果在定时器到期之前没有通过按键重置软件定时器，则执行定时器的回调函数，并且关闭背光。
+
+xSimulatedBacklightOn 变量保存背光状态。 xSimulatedBacklightOn 设置为 pdTRUE 表示背光打开，设置为 pdFALSE 表示背光关闭。
+
+软件定时器回调函数如下所示。
+
+```cpp
+static void prvBacklightTimerCallback(TimerHandle_t xTimer)
+{
+    TickType_t xTimeNow = xTaskGetTickCount();
+    /* 背光定时器超时，关闭背光。 */
+    xSimulatedBacklightOn = pdFALSE;
+    /* 打印背光关闭的时间。 */
+    vPrintStringAndNumber(
+        "Timer expired, turning backlight OFF at time\t\t", xTimeNow);
+}
+
+static void vKeyHitTask(void *pvParameters)
+{
+    const TickType_t xShortDelay = pdMS_TO_TICKS(50);
+    TickType_t xTimeNow;
+    vPrintString("Press a key to turn the backlight on.\r\n");
+    /* 理想情况下，应用程序是事件驱动的，并使用中断来处理按键操作。使用 FreeRTOS Windows 端口时使用键盘中断是不切实际的，因此此任务用于轮询按键。 */
+    for (;;)
+    {
+        /* 按钮被按下? */
+        if (_kbhit() != 0)
+        {
+            /* 记录按钮按下时间 */
+            xTimeNow = xTaskGetTickCount();
+            if (xSimulatedBacklightOn == pdFALSE)
+            {
+                /* 背光灯已关闭，因此将其打开并打印打开时间。 */
+                xSimulatedBacklightOn = pdTRUE;
+                vPrintStringAndNumber(
+                    "Key pressed, turning backlight ON at time\t\t",
+                    xTimeNow);
+            }
+            else
+            {
+                /* 背光已经打开，因此打印一条消息，说明计时器即将重置以及重置的时间。 */
+                vPrintStringAndNumber(
+                    "Key pressed, resetting software timer at time\t\t",
+                    xTimeNow);
+            }
+            /* 重置软件定时器。如果背光之前关闭，则此调用将启动计时器。如果背光之前已打开，则此调用将重新启动计时器。真实的应用程序可能会在中断中读取按键操作。如果此函数是中断服务例程，则必须使用 xTimerResetFromISR() 而不是 xTimerReset()。 */
+            xTimerReset(xBacklightTimer, xShortDelay);
+            /* 读取并丢弃按下的键 - 这个简单的示例不需要它。 */
+            (void)_getch();
+        }
+    }
+}
+```
+
+例 6.3 创建了一个任务来轮询键盘[^11]。该任务如上所示，但由于下一段所述的原因，其并不代表最佳设计。
+
+使用 FreeRTOS 允许您的应用程序是事件驱动的。事件驱动设计非常有效地利用处理时间，因为仅在事件发生时才使用处理时间，并且处理时间不会浪费在轮询未发生的事件上。示例 6.3 无法进行事件驱动，因为在使用 FreeRTOS Windows 端口时处理键盘中断是不切实际的，因此必须使用效率低得多的轮询技术。如果上面是一个中断服务例程，则将使用 xTimerResetFromISR() 代替 xTimerReset()。
+
+结果如下：
+
+![执行例 6.3 时产生的输出](Mastering-the-FreeRTOS-Real-Time-Kernel.v1.1.0-中文翻译.assets/image-20260125045903502.png)
+
+第一次按键发生在滴答计数为 812 时。此时背光打开，并且启动单次定时器。
+
+当滴答计数为 1813、3114、4015 和 5016 时，会发生更多的按键操作。所有这些按键操作都会导致计时器在计时器到期之前被重置。
+
+当滴答计数达到 10016 时，计时器到期。此时背光关闭。
+
+从上图可以看出，定时器的周期为 5000 个刻度；最后一次按下某个键后，背光恰好在 5000 次滴答后关闭，因此在上次重置计时器后 5000 次滴答。
+
 
 [^1]: 第4.13节描述了调度算法。
 [^2]: 这是一种过度简化，因为heap_2存储了堆区域内各块大小信息，因此这两个拆分块的总量实际上会小于25。
@@ -3395,3 +3649,4 @@ static void prvAutoReloadTimerCallback(TimerHandle_t xTimer)
 [^8]: FreeRTOS消息缓冲，如在待定章节中所述，提供了一种比持有可变长度消息的队列更轻量级的替代方案。
 [^9]: FreeRTOS 消息缓冲区是保存可变长度数据的队列的轻量级替代方案
 [^10]: 该任务过去被称为“定时器服务任务”，因为最初它仅用于执行软件定时器回调函数。现在，同一任务也用于其他目的，因此它被称为“RTOS 守护程序任务”这一更通用的名称。 
+[^11]: 打印到 Windows 控制台以及从 Windows 控制台读取按键都会导致 Windows 系统调用的执行。 Windows 系统调用（包括使用 Windows 控制台、磁盘或 TCP/IP 堆栈）可能会对 FreeRTOS Windows 端口的行为产生不利影响，通常应避免。*
