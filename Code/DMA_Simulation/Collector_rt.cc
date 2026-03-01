@@ -9,6 +9,10 @@
 #include <sched.h>
 #include <time.h>
 
+#include <vector>
+#include <fcntl.h>
+#include <sys/epoll.h>
+
 struct SampleFrame
 {
     uint64_t timestamp_ns;
@@ -69,11 +73,11 @@ private:
 void set_realtime_priority(int priority)
 {
     sched_param param;
-    param.sched_priority = priority;
+    param.sched_priority = priority; // 数字越大优先级越高
 
     if (pthread_setschedparam(
             pthread_self(),
-            SCHED_FIFO,
+            SCHED_FIFO, // Linux实时调度策略
             &param) != 0)
     {
         perror("Failed to set RT priority");
@@ -101,19 +105,21 @@ void collect_thread()
         ts.tv_sec = next_time / 1000000000ULL;
         ts.tv_nsec = next_time % 1000000000ULL;
 
-        clock_nanosleep(CLOCK_MONOTONIC,
-                        TIMER_ABSTIME,
+        clock_nanosleep(CLOCK_MONOTONIC, // 单调递增时钟，不受系统时间调整印象
+                        TIMER_ABSTIME,   // 绝对时间
                         &ts,
                         nullptr);
 
         uint64_t actual = now_ns();
+        // 统计调度抖动
         uint64_t jitter = (actual > next_time)
                               ? actual - next_time
                               : next_time - actual;
 
-        if (jitter > max_jitter)
+        if (jitter > max_jitter) // 统计最大抖动
             max_jitter = jitter;
 
+        // 模拟采样数据
         SampleFrame f;
         f.timestamp_ns = actual;
         f.seq = seq++;
@@ -130,20 +136,21 @@ void collect_thread()
     }
 }
 
+// 采集线程写入RingBuffer的数据，通过TCP socket发送给外部客户端
 void send_thread()
 {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(9000);
+    addr.sin_port = htons(9000); // 端口
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    bind(server_fd, (sockaddr *)&addr, sizeof(addr));
-    listen(server_fd, 1);
+    bind(server_fd, (sockaddr *)&addr, sizeof(addr)); // 0.0.0.0:9000
+    listen(server_fd, 1);                             // 1个连接等待
 
     std::cout << "Waiting client...\n";
-    int client_fd = accept(server_fd, nullptr, nullptr);
+    int client_fd = accept(server_fd, nullptr, nullptr); // 阻塞等待Qt客户端
     std::cout << "Client connected\n";
 
     SampleFrame frame;
@@ -152,13 +159,100 @@ void send_thread()
     {
         while (g_ring.pop(frame))
         {
-            send(client_fd, &frame, sizeof(frame), 0);
+            ssize_t ret = send(client_fd, &frame, sizeof(frame), 0);
         }
         usleep(200);
     }
 
     close(client_fd);
     close(server_fd);
+}
+
+// epoll版本
+void set_nonblocking(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK); // 设置非阻塞
+}
+
+void send_thread_epoll()
+{
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(9000);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    bind(server_fd, (sockaddr *)&addr, sizeof(addr));
+    listen(server_fd, SOMAXCONN);
+
+    set_nonblocking(server_fd);
+
+    int epfd = epoll_create1(0);
+    epoll_event ev{};
+
+    ev.events = EPOLLIN;
+    ev.data.fd = server_fd;
+
+    epoll_ctl(epfd, EPOLL_CTL_ADD, server_fd, &ev);
+
+    std::vector<int> clients;
+    epoll_event events[32];
+
+    SampleFrame frame;
+
+    while (g_running)
+    {
+        int nfds = epoll_wait(epfd, events, 32, 10);
+        for (int i = 0; i < nfds; i++)
+        {
+            if (events[i].data.fd == server_fd)
+            {
+                // 新客户端连接
+                int client_fd = accept(server_fd, nullptr, nullptr);
+                set_nonblocking(client_fd);
+
+                epoll_event cev{};
+                cev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+                cev.data.fd = client_fd;
+
+                epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &cev);
+                clients.push_back(client_fd);
+
+                std::cout << "Client connected" << std::endl;
+            }
+            else
+            {
+                int client_fd = events[i].data.fd;
+                if (events[i].events & EPOLLOUT)
+                {
+                    while (g_ring.pop(frame))
+                    {
+                        ssize_t ret = send(client_fd, &frame, sizeof(frame), MSG_NOSIGNAL);
+                        if (ret <= 0)
+                        {
+                            close(client_fd);
+                            epoll_ctl(epfd, EPOLL_CTL_DEL, client_fd, nullptr);
+                            break;
+                        }
+                    }
+                }
+
+                if (events[i].events & (EPOLLHUP | EPOLLERR))
+                {
+                    close(client_fd);
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, client_fd, nullptr);
+                }
+            }
+        }
+    }
+
+    close(server_fd);
+    close(epfd);
 }
 
 int main()
