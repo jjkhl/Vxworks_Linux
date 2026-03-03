@@ -13,13 +13,6 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 
-struct SampleFrame
-{
-    uint64_t timestamp_ns;
-    uint32_t seq;
-    float value;
-};
-
 static std::atomic<bool> g_running{true};
 
 inline uint64_t now_ns()
@@ -29,47 +22,20 @@ inline uint64_t now_ns()
     return uint64_t(ts.tv_sec) * 1000000000ULL + ts.tv_nsec;
 }
 
-template <typename T, size_t N>
-class RingBuffer
+// 设置socket非阻塞
+// epoll+ET(边缘触发)模式必须使用非阻塞IO,否则send/accept会卡死整个线程
+void set_nonblocking(int fd)
 {
-public:
-    bool push(const T &item) // 消费者
-    {
-        size_t w = write_.load(std::memory_order_relaxed);
-        size_t next = (w + 1) % N;
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK); // 设置非阻塞
+}
 
-        if (next == read_.load(std::memory_order_acquire))
-        {
-            dropped_++;
-            return false; // 满了 → 丢弃
-        }
-
-        buffer_[w] = item;
-        write_.store(next, std::memory_order_release);
-        return true;
-    }
-
-    bool pop(T &out) // 生产者
-    {
-        size_t r = read_.load(std::memory_order_relaxed);
-
-        if (r == write_.load(std::memory_order_acquire))
-            return false;
-
-        out = buffer_[r];
-        read_.store((r + 1) % N, std::memory_order_release);
-        return true;
-    }
-
-    uint64_t dropped() const { return dropped_; }
-
-private:
-    alignas(64) std::atomic<size_t> write_{0}; // 按照64字节对齐，现代 CPU cache line = 64 bytes。避免cache line伪共享
-    alignas(64) std::atomic<size_t> read_{0};
-    alignas(64) std::atomic<uint64_t> dropped_{0};
-    T buffer_[N];
-};
-
+/*
+    设置实时优先级
+    SCHED_FIFO：先进先出实时调度
+    优先级范围：1-99
+    必须sudo运行
+*/
 void set_realtime_priority(int priority)
 {
     sched_param param;
@@ -83,6 +49,74 @@ void set_realtime_priority(int priority)
         perror("Failed to set RT priority");
     }
 }
+
+/*
+    RT线程生成的数据帧
+    直接发送给客户端
+*/
+struct SampleFrame
+{
+    uint64_t timestamp_ns; // 真实采样时间
+    uint32_t seq;          // 序列号
+    float value;           // 示例数据
+};
+
+/*
+    单生产者消费者无锁RingBuffer
+    RT线程=生产者
+    网络线程=消费者
+
+    使用acquire/release建立happens-before
+    使用cache line对其避免伪共享
+*/
+template <typename T, size_t N>
+class RingBuffer
+{
+public:
+    bool push(const T &item) // 生产者
+    {
+        // 生产者只读自己写指针
+        size_t w = write_.load(std::memory_order_relaxed);
+        size_t next = (w + 1) % N;
+
+        // acquire确保看到消费者更新后的read_
+        // 放置读到旧数据
+        if (next == read_.load(std::memory_order_acquire))
+        {
+            dropped_++;
+            return false; // 满了 → 丢弃
+        }
+
+        // 写入数据
+        buffer_[w] = item;
+        // release保证buffer_吸入
+        // 对消费者可见
+        write_.store(next, std::memory_order_release);
+        return true;
+    }
+
+    bool pop(T &out) // 消费者
+    {
+        size_t r = read_.load(std::memory_order_relaxed);
+
+        // acquire确保看到生产者写入的数据
+        if (r == write_.load(std::memory_order_acquire))
+            return false;
+
+        out = buffer_[r];
+        // release更新read_
+        read_.store((r + 1) % N, std::memory_order_release);
+        return true;
+    }
+
+    uint64_t dropped() const { return dropped_; }
+
+private:
+    alignas(64) std::atomic<size_t> write_{0}; // 按照64字节对齐，现代 CPU cache line = 64 bytes。避免cache line伪共享
+    alignas(64) std::atomic<size_t> read_{0};
+    alignas(64) std::atomic<uint64_t> dropped_{0};
+    T buffer_[N];
+};
 
 static RingBuffer<SampleFrame, 4096> g_ring;
 
@@ -166,13 +200,6 @@ void send_thread()
 
     close(client_fd);
     close(server_fd);
-}
-
-// epoll版本
-void set_nonblocking(int fd)
-{
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK); // 设置非阻塞
 }
 
 void send_thread_epoll()
