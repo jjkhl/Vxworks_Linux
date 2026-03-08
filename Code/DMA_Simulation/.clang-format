@@ -1,0 +1,47 @@
+BasedOnStyle: Google
+
+ColumnLimit: 120
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 8
+
+# 大括号跟行尾（IntelliJ 默认）
+# BreakBeforeBraces: Attach
+BreakBeforeBraces: Allman
+
+# 访问修饰符与类体同级
+AccessModifierOffset: -4
+
+# 参数换行时对齐到括号
+AlignAfterOpenBracket: Align
+BinPackArguments: false
+BinPackParameters: false
+
+# 不压行
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+
+# 构造函数初始化列表
+BreakConstructorInitializers: BeforeColon
+ConstructorInitializerIndentWidth: 8
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+
+# 模板声明换行
+AlwaysBreakTemplateDeclarations: Yes
+
+# 运算符换行时留在行尾
+BreakBeforeBinaryOperators: None
+
+# 空行
+MaxEmptyLinesToKeep: 2
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# 指针和引用靠近类型名（int* p 而非 int *p）
+PointerAlignment: Left
+
+# 头文件排序
+SortIncludes: false
