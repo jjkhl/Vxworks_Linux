@@ -1,104 +1,294 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstring>
 #include <iostream>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/timerfd.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <cstring>
+#include <sys/mman.h>
 
-/*
-多个普通优先级生产者线程  ──push──►  MPSC 无锁有界队列  ──pop──►
-一个高优先级实时消费者线程 │ ▼ eventfd 通知机制 │ ▼ epoll_wait(0超时) +
-sleep_until
-生产者：模拟多个外部事件源(传感器、网络、其他线程等)，频率100Hz(10ms一次)
-消费者：只有一个高实时优先级线程，目标是每1ms醒来一次，尽量准时，抖动越小越好
-通信：使用工业级常见的MPSC无锁环形队列(Muti-Producer Single-Consumer Lock-Free
-Queue)+eventfd唤醒组合
-*/
-// 工业级MPSC有界无锁队列
+//////////////////////////////////////////////////////////////
+// MPMC 无锁队列（Vyukov）
+//////////////////////////////////////////////////////////////
 template <typename T, size_t Capacity>
-class MPSCQueue
+class MPMCQueue
 {
-    static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be power of 2");
+    static_assert((Capacity & (Capacity - 1)) == 0);
 
 public:
-    MPSCQueue()
+    MPMCQueue()
     {
-        for (size_t i = 0; i < Capacity; ++i)
-        {
+        for (size_t i = 0; i < Capacity; i++)
             buffer_[i].sequence.store(i, std::memory_order_relaxed);
-        }
     }
 
-    // 多生产者
     bool push(const T &data)
     {
         Cell *cell;
-        size_t pos = enqueue_pos_.load(std::memory_order_relaxed);  // 尝试写入的位置
+        size_t pos = enqueue_pos.load(std::memory_order_relaxed);
+
         for (;;)
         {
-            cell = &buffer_[pos & (Capacity - 1)];                        // 等价于pos%Capacity
-            size_t seq = cell->sequence.load(std::memory_order_acquire);  // buf_槽位上记录的序列号
+            cell = &buffer_[pos & mask];
+            size_t seq = cell->sequence.load(std::memory_order_acquire);
             intptr_t diff = (intptr_t)seq - (intptr_t)pos;
+
             if (diff == 0)
             {
-                // 如果pos=pos+1, 则将enqueue_pos_的值更新为pos+1,并返回true
-                // 如果pos!=pos+1, 则将pos更新伪enqueue_pos_的当前值，并返回false
-                // 综上，下面一行目的是实现多线程下有序的排队写入数据
-                if (enqueue_pos_.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed))
+                if (enqueue_pos.compare_exchange_weak(pos, pos + 1))
                     break;
             }
-            else if (diff < 0)  // 说明队列中的元素还没被消费者消费
-                return false;   // full
-            else                // 有其他生产者抢先CAS(compare and swap)成功
-                pos = enqueue_pos_.load(std::memory_order_release);
+            else if (diff < 0)
+            {
+                return false;  // full
+            }
+            else
+            {
+                pos = enqueue_pos.load(std::memory_order_relaxed);
+            }
         }
+
         cell->data = data;
         cell->sequence.store(pos + 1, std::memory_order_release);
         return true;
     }
 
-    // 单消费者
-    bool pop(const T &data)
+    bool pop(T &data)
     {
-        size_t pos = dequeue_pos_.load(std::memory_order_relaxed);
-        Cell *cell = &buffer_[pos & (Capacity - 1)];
-        size_t seq = cell->sequence.load(std::memory_order_acquire);
-        intptr_t diff = (intptr_t)seq - (intptr_t)pos;
+        Cell *cell;
+        size_t pos = dequeue_pos.load(std::memory_order_relaxed);
 
-        // 正好生产者已经写完这个位置
-        if (diff == 0)
+        for (;;)
         {
-            dequeue_pos_.store(pos + 1, std::memory_order_relaxed);
-            data = cell->data;
-            cell->sequence.store(pos + Capacity, std::memory_order_release);
-            return true;
-        }
-        return false;
-    }
+            cell = &buffer_[pos & mask];
+            size_t seq = cell->sequence.load(std::memory_order_acquire);
+            intptr_t diff = (intptr_t)seq - (intptr_t)(pos + 1);
 
-    void fun()
-    {
-        std::cout << std::endl;
+            if (diff == 0)
+            {
+                if (dequeue_pos.compare_exchange_weak(pos, pos + 1))
+                    break;
+            }
+            else if (diff < 0)
+            {
+                return false;
+            }
+            else
+            {
+                pos = dequeue_pos.load(std::memory_order_relaxed);
+            }
+        }
+
+        data = cell->data;
+        cell->sequence.store(pos + Capacity, std::memory_order_release);
+        return true;
     }
 
 private:
-    typedef struct Cell
+    struct Cell
     {
         std::atomic<size_t> sequence;
         T data;
-    } Cell;
-    alignas(64) std::atomic<size_t> enqueue_pos_{0};  // 生产者争抢位置
-    alignas(64) std::atomic<size_t> dequeue_pos_{0};  // 消费者独占位置
+    };
+
+    static constexpr size_t mask = Capacity - 1;
+
+    alignas(64) std::atomic<size_t> enqueue_pos{0};
+    alignas(64) std::atomic<size_t> dequeue_pos{0};
     alignas(64) Cell buffer_[Capacity];
 };
 
+//////////////////////////////////////////////////////////////
+// 数据结构
+//////////////////////////////////////////////////////////////
+struct Event
+{
+    uint64_t ts;
+    int value;
+};
+
+MPMCQueue<Event, 1024> queue;
+
+//////////////////////////////////////////////////////////////
+// 设置实时优先级
+//////////////////////////////////////////////////////////////
+void set_realtime_priority(int prio)
+{
+    sched_param param{};
+    param.sched_priority = prio;
+
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param))
+    {
+        perror("sched_setscheduler");
+    }
+}
+
+//////////////////////////////////////////////////////////////
+// Jitter统计
+//////////////////////////////////////////////////////////////
+class JitterStats
+{
+public:
+    void record(int64_t ns)
+    {
+        if (ns < min)
+            min = ns;
+        if (ns > max)
+            max = ns;
+        sum += ns;
+        count++;
+    }
+
+    void print()
+    {
+        if (count == 0)
+            return;
+
+        std::cout << "[Jitter ns] min=" << min << " max=" << max << " avg=" << sum / count << "\n";
+    }
+
+private:
+    int64_t min = INT64_MAX;
+    int64_t max = 0;
+    int64_t sum = 0;
+    int64_t count = 0;
+};
+
+//////////////////////////////////////////////////////////////
+// timerfd 创建
+//////////////////////////////////////////////////////////////
+int create_timerfd(int interval_ms)
+{
+    int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+
+    itimerspec its{};
+    its.it_interval.tv_sec = 0;
+    its.it_interval.tv_nsec = interval_ms * 1000000;
+    its.it_value = its.it_interval;
+
+    timerfd_settime(tfd, 0, &its, nullptr);
+
+    return tfd;
+}
+
+//////////////////////////////////////////////////////////////
+// Producer（模拟ISR源）
+//////////////////////////////////////////////////////////////
+void producer(int id, int efd)
+{
+    while (true)
+    {
+        Event e;
+        e.ts = std::chrono::steady_clock::now().time_since_epoch().count();
+        e.value = id;
+
+        while (!queue.push(e))
+        {
+            // 可改为丢弃策略
+        }
+
+        uint64_t one = 1;
+        write(efd, &one, sizeof(one));
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+}
+
+//////////////////////////////////////////////////////////////
+// Consumer（RT线程）
+//////////////////////////////////////////////////////////////
+void consumer_rt(int efd)
+{
+    set_realtime_priority(80);
+
+    // 锁内存（防止page fault）
+    mlockall(MCL_CURRENT | MCL_FUTURE);
+
+    int ep = epoll_create1(0);
+
+    // eventfd（数据事件）
+    epoll_event ev1{};
+    ev1.events = EPOLLIN;
+    ev1.data.u32 = 1;
+    epoll_ctl(ep, EPOLL_CTL_ADD, efd, &ev1);
+
+    // timerfd（1ms tick）
+    int tfd = create_timerfd(1);
+
+    epoll_event ev2{};
+    ev2.events = EPOLLIN;
+    ev2.data.u32 = 2;
+    epoll_ctl(ep, EPOLL_CTL_ADD, tfd, &ev2);
+
+    epoll_event events[2];
+
+    JitterStats jitter;
+    auto last = std::chrono::steady_clock::now();
+
+    int counter = 0;
+
+    while (true)
+    {
+        int n = epoll_wait(ep, events, 2, -1);
+
+        for (int i = 0; i < n; i++)
+        {
+            // ===== tick =====
+            if (events[i].data.u32 == 2)
+            {
+                uint64_t exp;
+                read(tfd, &exp, sizeof(exp));
+
+                auto now = std::chrono::steady_clock::now();
+
+                auto diff = std::chrono::duration_cast<std::chrono::nanoseconds>(now - last).count();
+
+                jitter.record(diff);
+                last = now;
+
+                if (++counter % 5000 == 0)
+                    jitter.print();
+            }
+
+            // ===== data =====
+            else if (events[i].data.u32 == 1)
+            {
+                uint64_t cnt;
+                read(efd, &cnt, sizeof(cnt));
+
+                Event e;
+                while (queue.pop(e))
+                {
+                    // 实际处理逻辑
+                    // printf("consume: %d\n", e.value);
+                }
+            }
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////
+// main
+//////////////////////////////////////////////////////////////
 int main()
 {
-    return 0;
+    int efd = eventfd(0, EFD_NONBLOCK);
+
+    std::vector<std::thread> producers;
+
+    for (int i = 0; i < 4; i++)
+        producers.emplace_back(producer, i, efd);
+
+    std::thread consumer(consumer_rt, efd);
+
+    for (auto &t : producers)
+        t.join();
+
+    consumer.join();
 }
