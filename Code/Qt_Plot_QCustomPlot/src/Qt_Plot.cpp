@@ -195,6 +195,7 @@ void Qt_Plot::updateplot()
     // 整体刷新
     //////////////////////////////////////////////////
     ui->widget->graph(0)->setData(plotXs, plotYs);
+    ui->widget->graph(0)->rescaleValueAxis();
 
     //////////////////////////////////////////////////
     // X轴滚动

@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <random>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -24,6 +25,14 @@ std::vector<int> clients;
 
 std::mutex clientsMutex;
 
+double random_y(double x)
+{
+    static std::mt19937 gen(std::random_device{}());
+    // 高斯噪声, 平均值0.0：不会让整体函数向上或向下便宜；标准差0.5：数值越大，波动越剧烈
+    static std::normal_distribution<double> noise(0.0, 0.5);
+    return sin(x) + noise(gen);
+}
+
 //////////////////////////////////////////////////
 // 广播线程
 //////////////////////////////////////////////////
@@ -40,7 +49,9 @@ void broadcastThread()
 
         e.x = x;
 
-        e.y = 5 * std::sin(x) + ((rand() % 100) / 100.0 - 0.5);
+        // e.y = 5 * std::sin(x) + ((rand() % 100) / 100.0 - 0.5);
+        e.y = random_y(e.x);
+        // std::cout << e.y << std::endl;
 
         //////////////////////////////////////////////////
         // 广播给所有客户端
