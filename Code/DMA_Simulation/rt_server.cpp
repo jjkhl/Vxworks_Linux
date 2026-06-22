@@ -11,10 +11,13 @@
 #include <thread>
 #include <vector>
 
+#define CHANNEL_NUM 4
+
 struct Event
 {
     double x;
-    double y;
+    // double y;
+    double y[CHANNEL_NUM];
 };
 
 //////////////////////////////////////////////////
@@ -50,7 +53,10 @@ void broadcastThread()
         e.x = x;
 
         // e.y = 5 * std::sin(x) + ((rand() % 100) / 100.0 - 0.5);
-        e.y = random_y(e.x);
+        e.y[0] = std::sin(x);
+        e.y[1] = std::cos(x);
+        e.y[2] = std::sin(x * 0.5) * 3;
+        e.y[3] = std::cos(x * 2.0) * 2;
         // std::cout << e.y << std::endl;
 
         //////////////////////////////////////////////////
